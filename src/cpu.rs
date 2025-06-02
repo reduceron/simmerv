@@ -518,7 +518,11 @@ impl Cpu {
                 }
 
                 let mode = (value >> SATP_MODE_SHIFT) & SATP_MODE_MASK;
-                if mode != 0 && mode != SatpMode::Sv39 as u64 && mode != SatpMode::Sv48 as u64 {
+                if mode != 0
+                    && mode != SatpMode::Sv39 as u64
+                    && mode != SatpMode::Sv48 as u64
+                    && mode != SatpMode::Sv57 as u64
+                {
                     log::warn!("Illegal SATP mode {mode:02x}");
                     return illegal;
                 }
@@ -1717,7 +1721,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             if word == 0x0100000f {
                 // Nothing to do here, but it would be interesting to see
                 // it used.
-                todo!("pause");
+                log::trace!("pause");
             }
             // Fence memory ops (we are currently TSO already)
             Ok(())

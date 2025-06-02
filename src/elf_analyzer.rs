@@ -1,4 +1,8 @@
-#![allow(clippy::unreadable_literal, clippy::similar_names)]
+#![allow(
+    clippy::unreadable_literal,
+    clippy::similar_names,
+    clippy::struct_field_names
+)]
 
 extern crate fnv;
 
