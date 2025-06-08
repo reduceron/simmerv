@@ -1,6 +1,7 @@
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::cast_possible_wrap)]
 
+use crate::bounded::Bounded;
 use crate::csr;
 use crate::dag_decoder;
 use crate::fp;
@@ -26,11 +27,48 @@ pub const CONFIG_SW_MANAGED_A_AND_D: bool = false;
 
 pub const PG_SHIFT: usize = 12; // 4K page size
 
+pub type Reg = Bounded<65>;
+impl Reg {
+    #[must_use]
+    pub const fn is_x0_dest(self) -> bool {
+        self.get() == 64
+    }
+}
+
+/// Generate a source integer `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn x(r: u32) -> Reg {
+    assert!(r < 32);
+    Reg::new(r)
+}
+
+/// Generate a destination integer `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn xd(r: u32) -> Reg {
+    assert!(r < 32);
+    // Remap x0 to the burn location 64.  This turns the write
+    // into branch-free code, but the real payoff will come later
+    // when we amortize this
+    Reg::new(((r + 63) & 63) + 1)
+}
+
+/// Generate a source or destination floating point `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn f(r: u32) -> Reg {
+    assert!(r < 32);
+    Reg::new(r + 32)
+}
+
 /// Emulates a RISC-V CPU core
 pub struct Cpu {
     // The essential CPU state
-    x: [i64; 32],
-    f: [i64; 32],
+    rf: [i64; 65],
     pc: i64,
     frm_: RoundingMode, // XXX make this accessor functions on fcsr
     fflags_: u8,        // XXX make this accessor functions on fcsr
@@ -89,8 +127,7 @@ impl Cpu {
         }
 
         let mut cpu = Self {
-            x: [0; 32],
-            f: [0; 32],
+            rf: [0; 65],
             frm_: RoundingMode::RoundNearestEven,
             fflags_: 0,
             fs: 1,
@@ -112,23 +149,21 @@ impl Cpu {
             cpu.csr[Csr::Misa as usize] |= 1 << (c as usize - 65);
         }
         cpu.mmu.mstatus = 2 << MSTATUS_UXL_SHIFT | 2 << MSTATUS_SXL_SHIFT | 3 << MSTATUS_MPP_SHIFT;
-        cpu.x[10] = 0; // boot hart
-        cpu.x[11] = 0x1020; // start of DTB (XXX could put that elsewhere);
+        cpu.write_x(x(11), 0x1020); // start of DTB (XXX could put that elsewhere);
         cpu
     }
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    const fn read_x(&self, r: usize) -> i64 {
-        self.x[r]
+    fn read_x(&self, r: Reg) -> i64 {
+        self.rf[r]
     }
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    const fn write_x(&mut self, r: usize, v: i64) {
-        if r != 0 {
-            self.x[r] = v;
-        }
+    fn write_x(&mut self, r: Reg, v: i64) {
+        assert_ne!(r.get(), 0);
+        self.rf[r] = v;
     }
 
     /// Reads Program counter
@@ -151,9 +186,8 @@ impl Cpu {
     /// # Arguments
     /// * `reg` Register number. Must be 0-31
     #[must_use]
-    pub fn read_register(&self, reg: u8) -> i64 {
-        debug_assert!(reg <= 31, "reg must be 0-31. {reg}");
-        self.read_x(reg as usize)
+    pub fn read_register(&self, reg: Reg) -> i64 {
+        self.rf[reg]
     }
 
     /// Checks that float instructions are enabled and
@@ -640,17 +674,11 @@ impl Cpu {
     /// Disassembles an instruction pointed by Program Counter and
     /// and return the [possibly] writeback register
     #[allow(clippy::cast_sign_loss)]
-    pub fn disassemble_insn(
-        &self,
-        s: &mut String,
-        addr: i64,
-        mut word32: u32,
-        eval: bool,
-    ) -> usize {
+    pub fn disassemble_insn(&self, s: &mut String, addr: i64, mut word32: u32, eval: bool) -> Reg {
         let (insn, _) = decompress(addr, word32);
         let Ok(decoded) = decode(&self.decode_dag, insn) else {
             let _ = write!(s, "{addr:016x} {word32:08x} Illegal instruction");
-            return 0;
+            return xd(0);
         };
 
         let asm = decoded.name.to_lowercase();
@@ -665,10 +693,10 @@ impl Cpu {
     }
 
     #[allow(clippy::cast_sign_loss)]
-    pub fn disassemble(&mut self, s: &mut String) -> usize {
+    pub fn disassemble(&mut self, s: &mut String) -> Reg {
         let Ok(word32) = self.memop_disass(self.pc) else {
             let _ = write!(s, "{:016x} <inaccessible>", self.pc);
-            return 0;
+            return xd(0);
         };
         self.disassemble_insn(s, self.pc, (word32 & 0xFFFFFFFF) as u32, true)
     }
@@ -684,32 +712,35 @@ impl Cpu {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read_f32(&self, r: usize) -> f32 {
+    fn read_f32(&self, r: Reg) -> f32 {
         assert_ne!(self.fs, 0);
         f32::from_bits(Sf32::unbox(self.read_f(r)) as u32)
     }
 
-    fn read_f(&self, r: usize) -> i64 {
+    fn read_f(&self, r: Reg) -> i64 {
+        assert!(32 <= r.get() && r.get() < 64);
         assert_ne!(self.fs, 0);
-        self.f[r]
+        self.rf[r]
     }
 
-    fn write_f(&mut self, r: usize, v: i64) {
+    fn write_f(&mut self, r: Reg, v: i64) {
+        assert!(32 <= r.get() && r.get() < 64);
         assert_ne!(self.fs, 0);
-        self.f[r] = v;
+        self.rf[r] = v;
         self.fs = 3;
     }
 
-    fn write_f32(&mut self, r: usize, f: f32) {
+    fn write_f32(&mut self, r: Reg, f: f32) {
+        assert!(32 <= r.get() && r.get() < 64);
         self.write_f(r, fp::NAN_BOX_F32 | i64::from(f.to_bits()));
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read_f64(&self, r: usize) -> f64 {
+    fn read_f64(&self, r: Reg) -> f64 {
         f64::from_bits(self.read_f(r) as u64)
     }
 
-    fn write_f64(&mut self, r: usize, f: f64) {
+    fn write_f64(&mut self, r: Reg, f: f64) {
         self.write_f(r, f.to_bits() as i64);
     }
 
@@ -896,7 +927,7 @@ struct Instruction {
     bits: u32,
     name: &'static str,
     operation: fn(cpu: &mut Cpu, address: i64, word: u32) -> Result<(), Exception>,
-    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> usize,
+    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
 }
 
 #[inline]
@@ -910,54 +941,54 @@ const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
 }
 
 struct FormatB {
-    rs1: usize,
-    rs2: usize,
+    rs1: Reg,
+    rs2: Reg,
     imm: i64,
 }
 
-#[allow(clippy::cast_sign_loss)]
-const fn parse_format_b(word: u32) -> FormatB {
-    let word = word as i32;
+#[allow(clippy::cast_sign_loss, clippy::cast_lossless)]
+fn parse_format_b(word: u32) -> FormatB {
+    let iword = word as i32;
     FormatB {
-        rs1: ((word >> 15) & 0x1f) as usize, // [19:15]
-        rs2: ((word >> 20) & 0x1f) as usize, // [24:20]
-        imm: (word >> 31 << 12 | // imm[31:12] = [31]
-            ((word << 4) & 0x0000_0800) | // imm[11] = [7]
-            ((word >> 20) & 0x0000_07e0) | // imm[10:5] = [30:25]
-            ((word >> 7) & 0x0000_001e)) as i64, // imm[4:1] = [11:8]
+        rs1: x((word >> 15) & 0x1f), // [19:15]
+        rs2: x((word >> 20) & 0x1f), // [24:20]
+        imm: (iword >> 31 << 12 | // imm[31:12] = [31]
+            ((iword << 4) & 0x0000_0800) | // imm[11] = [7]
+            ((iword >> 20) & 0x0000_07e0) | // imm[10:5] = [30:25]
+            ((iword >> 7) & 0x0000_001e)) as i64, // imm[4:1] = [11:8]
     }
 }
 
-fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_b(word);
     *s += get_register_name(f.rs1);
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let _ = write!(s, ", {}", get_register_name(f.rs2));
-    if evaluate && f.rs2 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs2]);
+    if evaluate && f.rs2.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
-    0
+    xd(0)
 }
 
 struct FormatCSR {
     csr: u16,
-    rs: usize,
-    rd: usize,
+    rs: Reg,
+    rd: Reg,
 }
 
-const fn parse_format_csr(word: u32) -> FormatCSR {
+fn parse_format_csr(word: u32) -> FormatCSR {
     FormatCSR {
         csr: ((word >> 20) & 0xfff) as u16, // [31:20]
-        rs: ((word >> 15) & 0x1f) as usize, // [19:15], also uimm
-        rd: ((word >> 7) & 0x1f) as usize,  // [11:7]
+        rs: x((word >> 15) & 0x1f),         // [19:15], also uimm
+        rd: xd((word >> 7) & 0x1f),         // [11:7]
     }
 }
 
 #[allow(clippy::option_if_let_else)] // Clippy is loosing it
-fn dump_format_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_csr(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -983,14 +1014,14 @@ fn dump_format_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate
     }
 
     let _ = write!(s, ", {}", get_register_name(f.rs));
-    if evaluate && f.rs != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs]);
+    if evaluate && f.rs.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs));
     }
     f.rd
 }
 
 #[allow(clippy::option_if_let_else)] // Clippy is loosing it
-fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_csr(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -1015,20 +1046,21 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
         let _ = write!(s, "{csr_s}");
     }
 
-    let _ = write!(s, ", {}", f.rs);
+    let _ = write!(s, ", {}", get_register_name(f.rs));
     f.rd
 }
 
 struct FormatI {
-    rd: usize,
-    rs1: usize,
+    rd: Reg,
+    rs1: Reg,
     imm: i64,
 }
 
-const fn parse_format_i(word: u32) -> FormatI {
+#[allow(clippy::cast_lossless)]
+fn parse_format_i(word: u32) -> FormatI {
     FormatI {
-        rd: ((word >> 7) & 0x1f) as usize,   // [11:7]
-        rs1: ((word >> 15) & 0x1f) as usize, // [19:15]
+        rd: xd((word >> 7) & 0x1f),  // [11:7]
+        rs1: x((word >> 15) & 0x1f), // [19:15]
         imm: (
             // XXX fix this mess
             match word & 0x8000_0000 {
@@ -1041,46 +1073,63 @@ const fn parse_format_i(word: u32) -> FormatI {
     }
 }
 
-fn dump_format_i(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+#[allow(clippy::cast_lossless)]
+fn parse_format_i_fx(word: u32) -> FormatI {
+    FormatI {
+        rd: f((word >> 7) & 0x1f),   // [11:7]
+        rs1: x((word >> 15) & 0x1f), // [19:15]
+        imm: (
+            // XXX fix this mess
+            match word & 0x8000_0000 {
+                // imm[31:11] = [31]
+                0x8000_0000 => 0xffff_f800,
+                _ => 0,
+            } | ((word >> 20) & 0x0000_07ff)
+            // imm[10:0] = [30:20]
+        ) as i32 as i64,
+    }
+}
+
+fn dump_format_i(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_i(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {}", get_register_name(f.rs1));
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let _ = write!(s, ", {:x}", f.imm);
     f.rd
 }
 
-fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_i(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}({}", f.imm, get_register_name(f.rs1));
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     *s += ")";
     f.rd
 }
 
 struct FormatJ {
-    rd: usize,
+    rd: Reg,
     imm: i64,
 }
 
-#[allow(clippy::cast_sign_loss)]
-const fn parse_format_j(word: u32) -> FormatJ {
-    let word = word as i32;
+#[allow(clippy::cast_lossless)]
+fn parse_format_j(word: u32) -> FormatJ {
+    let iword = word as i32;
     FormatJ {
-        rd: ((word >> 7) & 0x1f) as usize, // [11:7]
-        imm: (word >> 31 << 20 | // imm[31:20] = [31]
-             (word & 0x000f_f000) | // imm[19:12] = [19:12]
-             ((word & 0x0010_0000) >> 9) | // imm[11] = [20]
-             ((word & 0x7fe0_0000) >> 20)) as i64, // imm[10:1] = [30:21]
+        rd: xd((word >> 7) & 0x1f), // [11:7]
+        imm: (iword >> 31 << 20 | // imm[31:20] = [31]
+             (iword & 0x000f_f000) | // imm[19:12] = [19:12]
+             ((iword & 0x0010_0000) >> 9) | // imm[11] = [20]
+             ((iword & 0x7fe0_0000) >> 20)) as i64, // imm[10:1] = [30:21]
     }
 }
 
-fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate: bool) -> usize {
+fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate: bool) -> Reg {
     let f = parse_format_j(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
@@ -1089,110 +1138,156 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
 
 #[derive(Debug)]
 struct FormatR {
-    rd: usize,
+    rd: Reg,
     funct3: usize,
-    rs1: usize,
-    rs2: usize,
+    rs1: Reg,
+    rs2: Reg,
 }
 
-const fn parse_format_r(word: u32) -> FormatR {
+fn parse_format_r(word: u32) -> FormatR {
     FormatR {
-        rd: ((word >> 7) & 0x1f) as usize,   // [11:7]
+        rd: xd((word >> 7) & 0x1f),          // [11:7]
         funct3: ((word >> 12) & 7) as usize, // [14:12]
-        rs1: ((word >> 15) & 0x1f) as usize, // [19:15]
-        rs2: ((word >> 20) & 0x1f) as usize, // [24:20]
+        rs1: x((word >> 15) & 0x1f),         // [19:15]
+        rs2: x((word >> 20) & 0x1f),         // [24:20]
     }
 }
 
-fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn parse_format_r_xf(word: u32) -> FormatR {
+    FormatR {
+        rd: xd((word >> 7) & 0x1f),          // [11:7]
+        funct3: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: f((word >> 15) & 0x1f),         // [19:15]
+        rs2: x((word >> 20) & 0x1f),         // [24:20]
+    }
+}
+
+fn parse_format_r_xff(word: u32) -> FormatR {
+    FormatR {
+        rd: xd((word >> 7) & 0x1f),          // [11:7]
+        funct3: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: f((word >> 15) & 0x1f),         // [19:15]
+        rs2: f((word >> 20) & 0x1f),         // [24:20]
+    }
+}
+
+fn parse_format_r_fx(word: u32) -> FormatR {
+    FormatR {
+        rd: f((word >> 7) & 0x1f),           // [11:7]
+        funct3: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: x((word >> 15) & 0x1f),         // [19:15]
+        rs2: x((word >> 20) & 0x1f),         // [24:20]
+    }
+}
+
+fn parse_format_r_ff(word: u32) -> FormatR {
+    FormatR {
+        rd: f((word >> 7) & 0x1f),           // [11:7]
+        funct3: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: f((word >> 15) & 0x1f),         // [19:15]
+        rs2: f((word >> 20) & 0x1f),         // [24:20]
+    }
+}
+
+fn parse_format_r_fff(word: u32) -> FormatR {
+    FormatR {
+        rd: f((word >> 7) & 0x1f),           // [11:7]
+        funct3: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: f((word >> 15) & 0x1f),         // [19:15]
+        rs2: f((word >> 20) & 0x1f),         // [24:20]
+    }
+}
+
+fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_r(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
     *s += get_register_name(f.rs1);
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let _ = write!(s, ", {}", get_register_name(f.rs2));
-    if evaluate && f.rs2 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs2]);
+    if evaluate && f.rs2.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     f.rd
 }
 
-fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_r(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
     *s += get_register_name(f.rs1);
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let shamt = (word >> 20) & 63;
     let _ = write!(s, ", {shamt}");
     f.rd
 }
 
-fn dump_format_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+fn dump_format_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_r(word);
-    let _ = write!(s, "ft{}, ", f.rd);
+    let _ = write!(s, "{}, ", get_register_name(f.rd));
     *s += get_register_name(f.rs1);
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let _ = write!(s, ", {}", get_register_name(f.rs2));
-    if evaluate && f.rs2 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs2]);
+    if evaluate && f.rs2.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     f.rd
 }
 
 // has rs3
 struct FormatR2 {
-    rd: usize,
+    rd: Reg,
     rm: usize,
-    rs1: usize,
-    rs2: usize,
-    rs3: usize,
+    rs1: Reg,
+    rs2: Reg,
+    rs3: Reg,
 }
 
-const fn parse_format_r2(word: u32) -> FormatR2 {
+fn parse_format_r2_ffff(word: u32) -> FormatR2 {
     FormatR2 {
-        rd: ((word >> 7) & 0x1f) as usize,   // [11:7]
-        rm: ((word >> 12) & 7) as usize,     // [14:12]
-        rs1: ((word >> 15) & 0x1f) as usize, // [19:15]
-        rs2: ((word >> 20) & 0x1f) as usize, // [24:20]
-        rs3: ((word >> 27) & 0x1f) as usize, // [31:27]
+        rd: f((word >> 7) & 0x1f),       // [11:7]
+        rm: ((word >> 12) & 7) as usize, // [14:12]
+        rs1: f((word >> 15) & 0x1f),     // [19:15]
+        rs2: f((word >> 20) & 0x1f),     // [24:20]
+        rs3: f((word >> 27) & 0x1f),     // [31:27]
     }
 }
 
-fn dump_format_r2(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
-    let f = parse_format_r2(word);
+fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+    let f = parse_format_r2_ffff(word);
     *s += get_register_name(f.rd);
-    let _ = write!(s, ", f{}", f.rs1);
+    let _ = write!(s, ", {}", get_register_name(f.rs1));
     if evaluate {
-        let _ = write!(s, ":{:x}", cpu.f[f.rs1]);
+        let _ = write!(s, ":{:x}", cpu.read_f(f.rs1));
     }
-    let _ = write!(s, ", {}", f.rs2);
+    let _ = write!(s, ", {}", get_register_name(f.rs2));
     if evaluate {
-        let _ = write!(s, ":{:x}", cpu.f[f.rs2]);
+        let _ = write!(s, ":{:x}", cpu.read_f(f.rs2));
     }
-    let _ = write!(s, ", {}", f.rs3);
+    let _ = write!(s, ", {}", get_register_name(f.rs3));
     if evaluate {
-        let _ = write!(s, ":{:x}", cpu.f[f.rs3]);
+        let _ = write!(s, ":{:x}", cpu.read_f(f.rs3));
     }
     f.rd
 }
 
 struct FormatS {
-    rs1: usize,
-    rs2: usize,
+    rs1: Reg,
+    rs2: Reg,
     imm: i64,
 }
 
-const fn parse_format_s(word: u32) -> FormatS {
+#[allow(clippy::cast_lossless)]
+fn parse_format_s(word: u32) -> FormatS {
     FormatS {
-        rs1: ((word >> 15) & 0x1f) as usize, // [19:15]
-        rs2: ((word >> 20) & 0x1f) as usize, // [24:20]
+        rs1: x((word >> 15) & 0x1f), // [19:15]
+        rs2: x((word >> 20) & 0x1f), // [24:20]
         imm: (
             // XXX fix this mess
             match word & 0x80000000 {
@@ -1206,33 +1301,52 @@ const fn parse_format_s(word: u32) -> FormatS {
     }
 }
 
-fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> usize {
+#[allow(clippy::cast_lossless)]
+fn parse_format_s_xf(word: u32) -> FormatS {
+    FormatS {
+        rs1: x((word >> 15) & 0x1f), // [19:15]
+        rs2: f((word >> 20) & 0x1f), // [24:20]
+        imm: (
+            // XXX fix this mess
+            match word & 0x80000000 {
+                                0x80000000 => 0xfffff000,
+                                _ => 0
+                        } | // imm[31:12] = [31]
+                        ((word >> 20) & 0xfe0) | // imm[11:5] = [31:25]
+                        ((word >> 7) & 0x1f)
+            // imm[4:0] = [11:7]
+        ) as i32 as i64,
+    }
+}
+
+fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_s(word);
     *s += get_register_name(f.rs2);
-    if evaluate && f.rs2 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs2]);
+    if evaluate && f.rs2.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     let _ = write!(s, ", {:x}({}", f.imm, get_register_name(f.rs1));
-    if evaluate && f.rs1 != 0 {
-        let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+    if evaluate && f.rs1.get() != 0 {
+        let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     *s += ")";
-    0
+    xd(0)
 }
 
 struct FormatU {
-    rd: usize,
+    rd: Reg,
     imm: i64,
 }
 
-const fn parse_format_u(word: u32) -> FormatU {
+#[allow(clippy::cast_lossless)]
+fn parse_format_u(word: u32) -> FormatU {
     FormatU {
-        rd: ((word >> 7) & 31) as usize, // [11:7]
+        rd: xd((word >> 7) & 31), // [11:7]
         imm: (word & 0xfffff000) as i32 as i64,
     }
 }
 
-fn dump_format_u(s: &mut String, _cpu: &Cpu, _address: i64, word: u32, _evaluate: bool) -> usize {
+fn dump_format_u(s: &mut String, _cpu: &Cpu, _address: i64, word: u32, _evaluate: bool) -> Reg {
     let f = parse_format_u(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}", f.imm);
@@ -1241,22 +1355,19 @@ fn dump_format_u(s: &mut String, _cpu: &Cpu, _address: i64, word: u32, _evaluate
 }
 
 #[allow(clippy::ptr_arg)] // Clippy can't tell that we can't change the function type
-const fn dump_empty(
-    _s: &mut String,
-    _cpu: &Cpu,
-    _address: i64,
-    _word: u32,
-    _evaluate: bool,
-) -> usize {
-    0
+fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate: bool) -> Reg {
+    xd(0)
 }
 
-const fn get_register_name(num: usize) -> &'static str {
+// XXX Could also just implement Display for Reg...
+const fn get_register_name(num: Reg) -> &'static str {
     [
         "x0", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",
         "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4",
-        "t5", "t6",
-    ][num]
+        "t5", "t6", "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11",
+        "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
+        "f25", "f26", "f27", "f28", "f29", "f30", "f31", "x0",
+    ][num.get() as usize]
 }
 
 const INSTRUCTION_NUM: usize = 173;
@@ -1319,8 +1430,8 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_i(word);
             *s += get_register_name(f.rd);
             let _ = write!(s, ", {:x}({}", f.imm, get_register_name(f.rs1));
-            if evaluate && f.rs1 != 0 {
-                let _ = write!(s, ":{:x}", cpu.x[f.rs1]);
+            if evaluate && f.rs1.get() != 0 {
+                let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
             }
             *s += ")";
             f.rd
@@ -1870,7 +1981,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SLLIW",
         operation: |cpu, _address, word| {
             let f = parse_format_r(word);
-            let shamt = f.rs2 as u32;
+            let shamt = f.rs2.get();
             let s1 = cpu.read_x(f.rs1);
             cpu.write_x(f.rd, i64::from((s1 << shamt) as i32));
             Ok(())
@@ -1990,7 +2101,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_csr(word);
 
             let tmp = cpu.read_x(f.rs);
-            if f.rd == 0 {
+            if f.rd.is_x0_dest() {
                 cpu.write_csr(f.csr, tmp as u64)?;
             } else {
                 let v = cpu.read_csr(f.csr)? as i64;
@@ -2009,7 +2120,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
-            if f.rs != 0 {
+            if f.rs.get() != 0 {
                 let value = cpu.read_x(f.rs);
                 cpu.write_csr(f.csr, (data | value) as u64)?;
             }
@@ -2025,7 +2136,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
-            if f.rs != 0 {
+            if f.rs.get() != 0 {
                 let value = cpu.read_x(f.rs);
                 cpu.write_csr(f.csr, (data & !value) as u64)?;
             }
@@ -2041,11 +2152,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word| {
             let f = parse_format_csr(word);
 
-            if f.rd == 0 {
-                cpu.write_csr(f.csr, f.rs as u64)?;
+            if f.rd.is_x0_dest() {
+                cpu.write_csr(f.csr, f.rs.get() as u64)?;
             } else {
                 let v = cpu.read_csr(f.csr)? as i64;
-                cpu.write_csr(f.csr, f.rs as u64)?;
+                cpu.write_csr(f.csr, f.rs.get() as u64)?;
                 cpu.write_x(f.rd, v);
             }
 
@@ -2060,8 +2171,8 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
-            if f.rs != 0 {
-                cpu.write_csr(f.csr, (data | f.rs as i64) as u64)?;
+            if f.rs.get() != 0 {
+                cpu.write_csr(f.csr, (data | f.rs.get() as i64) as u64)?;
             }
             cpu.write_x(f.rd, data);
             Ok(())
@@ -2075,8 +2186,8 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
-            if f.rs != 0 {
-                cpu.write_csr(f.csr, (data & !(f.rs as i64)) as u64)?;
+            if f.rs.get() != 0 {
+                cpu.write_csr(f.csr, (data & !(f.rs.get() as i64)) as u64)?;
             }
             cpu.write_x(f.rd, data);
             Ok(())
@@ -2665,7 +2776,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x00002007,
         name: "FLW",
         operation: |cpu, _address, word| {
-            let f = parse_format_i(word);
+            let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
             let s1 = cpu.read_x(f.rs1);
             let v = cpu.memop(Read, s1, f.imm, 0, 4)?;
@@ -2680,7 +2791,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FSW",
         operation: |cpu, _address, word| {
             cpu.check_float_access(0)?;
-            let f = parse_format_s(word);
+            let f = parse_format_s_xf(word);
             let s1 = cpu.read_x(f.rs1);
             let s2 = cpu.read_f(f.rs2);
             cpu.mmu.store_virt_u32_(s1.wrapping_add(f.imm), s2)
@@ -2692,7 +2803,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x00000043,
         name: "FMADD.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             // XXX Update fflags
             let s1 = cpu.read_f32(f.rs1);
@@ -2701,14 +2812,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             cpu.write_f32(f.rd, s1.mul_add(s2, value3));
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x00000047,
         name: "FMSUB.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f32(
                 f.rd,
@@ -2717,14 +2828,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x0000004b,
         name: "FNMSUB.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f32(
                 f.rd,
@@ -2734,14 +2845,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x0000004f,
         name: "FNMADD.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f32(
                 f.rd,
@@ -2751,14 +2862,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
         bits: 0x00000053,
         name: "FADD.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f32(f.rd, cpu.read_f32(f.rs1) + cpu.read_f32(f.rs2));
             Ok(())
@@ -2770,7 +2881,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x08000053,
         name: "FSUB.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f32(f.rd, cpu.read_f32(f.rs1) - cpu.read_f32(f.rs2));
             Ok(())
@@ -2783,7 +2894,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FMUL.S",
         operation: |cpu, _address, word| {
             // @TODO: Update fcsr
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f32(f.rd, cpu.read_f32(f.rs1) * cpu.read_f32(f.rs2));
             Ok(())
@@ -2795,7 +2906,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x18000053,
         name: "FDIV.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             //let rm = cpu.get_rm(word);
 
@@ -2822,7 +2933,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x58000053,
         name: "FSQRT.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f32(f.rd, cpu.read_f32(f.rs1).sqrt());
             Ok(())
@@ -2834,7 +2945,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x20000053,
         name: "FSGNJ.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
             let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
@@ -2849,7 +2960,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x20001053,
         name: "FSGNJN.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
             let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
@@ -2864,7 +2975,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x20002053,
         name: "FSGNJX.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
             let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
@@ -2879,7 +2990,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x28000053,
         name: "FMIN.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let (f1, f2) = (cpu.read_f32(f.rs1), cpu.read_f32(f.rs2));
             let r = if f1 < f2 { f1 } else { f2 };
@@ -2893,7 +3004,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x28001053,
         name: "FMAX.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let (f1, f2) = (cpu.read_f32(f.rs1), cpu.read_f32(f.rs2));
             let r = if f1 > f2 { f1 } else { f2 };
@@ -2907,7 +3018,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc0000053,
         name: "FCVT.W.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, i64::from(cpu.read_f32(f.rs1) as i32));
             Ok(())
@@ -2919,7 +3030,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc0100053,
         name: "FCVT.WU.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, i64::from(cpu.read_f32(f.rs1) as u32));
             Ok(())
@@ -2931,7 +3042,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xe0000053,
         name: "FMV.X.W",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             cpu.write_x(f.rd, i64::from(cpu.read_f(f.rs1) as i32));
             Ok(())
@@ -2943,7 +3054,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa0002053,
         name: "FEQ.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::feq(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -2957,7 +3068,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa0001053,
         name: "FLT.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::flt(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -2971,7 +3082,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa0000053,
         name: "FLE.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::fle(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -2985,7 +3096,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xe0001053,
         name: "FCLASS.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             cpu.write_x(f.rd, 1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize);
             Ok(())
@@ -2997,7 +3108,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd0000053,
         name: "FCVT.S.W",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_i32_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
             cpu.write_f(f.rd, r);
@@ -3011,7 +3122,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd0100053,
         name: "FCVT.S.WU",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_u32_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
             cpu.write_f(f.rd, r);
@@ -3025,7 +3136,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xf0000053,
         name: "FMV.W.X",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f(f.rd, fp::NAN_BOX_F32 | s1);
@@ -3039,7 +3150,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc0200053,
         name: "FCVT.L.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, cpu.read_f32(f.rs1) as i64);
             Ok(())
@@ -3051,7 +3162,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc0300053,
         name: "FCVT.LU.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, cpu.read_f32(f.rs1) as u64 as i64);
             Ok(())
@@ -3063,7 +3174,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd0200053,
         name: "FCVT.S.L",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_i64_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
             cpu.write_f(f.rd, r);
@@ -3077,7 +3188,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd0300053,
         name: "FCVT.S.LU",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_u64_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
 
@@ -3094,7 +3205,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x00003007,
         name: "FLD",
         operation: |cpu, _address, word| {
-            let f = parse_format_i(word);
+            let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
             let s1 = cpu.read_x(f.rs1);
             let v = cpu.memop(Read, s1, f.imm, 0, 8)?;
@@ -3109,7 +3220,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FSD",
         operation: |cpu, _address, word| {
             cpu.check_float_access(0)?;
-            let f = parse_format_s(word);
+            let f = parse_format_s_xf(word);
             let s1 = cpu.read_x(f.rs1);
             let s2 = cpu.read_f(f.rs2);
             cpu.mmu.store64(s1.wrapping_add(f.imm), s2)
@@ -3121,7 +3232,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x02000043,
         name: "FMADD.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f64(
                 f.rd,
@@ -3130,14 +3241,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x02000047,
         name: "FMSUB.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f64(
                 f.rd,
@@ -3146,14 +3257,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x0200004b,
         name: "FNMSUB.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f64(
                 f.rd,
@@ -3163,14 +3274,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
         bits: 0x0200004f,
         name: "FNMADD.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r2(word);
+            let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             cpu.write_f64(
                 f.rd,
@@ -3180,14 +3291,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             );
             Ok(())
         },
-        disassemble: dump_format_r2,
+        disassemble: dump_format_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
         bits: 0x02000053,
         name: "FADD.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f64(f.rd, cpu.read_f64(f.rs1) + cpu.read_f64(f.rs2));
             Ok(())
@@ -3199,7 +3310,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x0a000053,
         name: "FSUB.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f64(f.rd, cpu.read_f64(f.rs1) - cpu.read_f64(f.rs2));
             Ok(())
@@ -3212,7 +3323,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FMUL.D",
         operation: |cpu, _address, word| {
             // @TODO: Update fcsr
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f64(f.rd, cpu.read_f64(f.rs1) * cpu.read_f64(f.rs2));
             Ok(())
@@ -3224,7 +3335,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x1a000053,
         name: "FDIV.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_f64(f.rs1);
             let s2 = cpu.read_f64(f.rs2);
@@ -3248,7 +3359,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x5a000053,
         name: "FSQRT.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f64(f.rd, cpu.read_f64(f.rs1).sqrt());
             Ok(())
@@ -3260,7 +3371,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x22000053,
         name: "FSGNJ.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
             let rs2_bits = cpu.read_f(f.rs2);
@@ -3275,7 +3386,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x22001053,
         name: "FSGNJN.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
             let rs2_bits = cpu.read_f(f.rs2);
@@ -3290,7 +3401,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x22002053,
         name: "FSGNJX.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
             let rs2_bits = cpu.read_f(f.rs2);
@@ -3305,7 +3416,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x2A000053,
         name: "FMIN.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let (f1, f2) = (cpu.read_f64(f.rs1), cpu.read_f64(f.rs2));
             let r = if f1 < f2 { f1 } else { f2 };
@@ -3319,7 +3430,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x2A001053,
         name: "FMAX.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let (f1, f2) = (cpu.read_f64(f.rs1), cpu.read_f64(f.rs2));
             let r = if f1 > f2 { f1 } else { f2 };
@@ -3333,7 +3444,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x40100053,
         name: "FCVT.S.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_f32(f.rd, cpu.read_f64(f.rs1) as f32);
             Ok(())
@@ -3345,7 +3456,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x42000053,
         name: "FCVT.D.S",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             let (v, fflags) = fp::fcvt_d_s(cpu.read_f(f.rs1));
             cpu.write_f(f.rd, v);
@@ -3359,7 +3470,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa2002053,
         name: "FEQ.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::feq(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -3374,7 +3485,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa2001053,
         name: "FLT.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::flt(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -3388,7 +3499,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xa2000053,
         name: "FLE.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::fle(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
             cpu.write_x(f.rd, i64::from(r));
@@ -3403,7 +3514,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FCLASS.D",
         operation: |cpu, _address, word| {
             cpu.check_float_access(0)?;
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.write_x(f.rd, 1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize);
             Ok(())
         },
@@ -3414,7 +3525,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc2000053,
         name: "FCVT.W.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, i64::from(cpu.read_f64(f.rs1) as i32));
             Ok(())
@@ -3426,7 +3537,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc2100053,
         name: "FCVT.WU.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, i64::from(cpu.read_f64(f.rs1) as u32));
             Ok(())
@@ -3438,7 +3549,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd2000053,
         name: "FCVT.D.W",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f64(f.rd, f64::from(s1 as i32));
@@ -3451,7 +3562,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd2100053,
         name: "FCVT.D.WU",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f64(f.rd, f64::from(s1 as u32));
@@ -3465,7 +3576,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc2200053,
         name: "FCVT.L.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, cpu.read_f64(f.rs1) as i64);
             Ok(())
@@ -3477,7 +3588,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xc2300053,
         name: "FCVT.LU.D",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             cpu.write_x(f.rd, cpu.read_f64(f.rs1) as u64 as i64);
             Ok(())
@@ -3490,7 +3601,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FMV.X.D",
         operation: |cpu, _address, word| {
             cpu.check_float_access(0)?;
-            let f = parse_format_r(word);
+            let f = parse_format_r_xf(word);
             cpu.write_x(f.rd, cpu.read_f(f.rs1));
             Ok(())
         },
@@ -3501,7 +3612,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd2200053,
         name: "FCVT.D.L",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f64(f.rd, s1 as f64);
@@ -3514,7 +3625,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xd2300053,
         name: "FCVT.D.LU",
         operation: |cpu, _address, word| {
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f64(f.rd, s1 as u64 as f64);
@@ -3528,7 +3639,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FMV.D.X",
         operation: |cpu, _address, word| {
             cpu.check_float_access(0)?;
-            let f = parse_format_r(word);
+            let f = parse_format_r_fx(word);
             let s1 = cpu.read_x(f.rs1);
             cpu.write_f(f.rd, s1);
             Ok(())
@@ -3826,43 +3937,6 @@ mod test_cpu {
     }
 
     #[test]
-    fn read_register() {
-        let mut cpu = create_cpu();
-        // Initial register values are 0 other than 0xb th register.
-        // Initial value of 0xb th register is temporal for Linux boot and
-        // I'm not sure if the value is correct. Then skipping so far.
-        for i in 0..31 {
-            if i != 0xb {
-                assert_eq!(0, cpu.read_register(i));
-            }
-        }
-
-        for i in 1..31 {
-            cpu.x[i] = i as i64 + 1;
-        }
-
-        for i in 0..31 {
-            match i {
-                // 0th register is hardwired zero
-                0 => assert_eq!(0, cpu.read_register(i)),
-                _ => assert_eq!(i64::from(i) + 1, cpu.read_register(i)),
-            }
-        }
-
-        for i in 1..31 {
-            cpu.x[i] = (0xffffffffffffffff - i) as i64;
-        }
-
-        for i in 0..31 {
-            match i {
-                // 0th register is hardwired zero
-                0 => assert_eq!(0, cpu.read_register(i)),
-                _ => assert_eq!(-(i64::from(i) + 1), cpu.read_register(i)),
-            }
-        }
-    }
-
-    #[test]
     #[allow(clippy::match_wild_err_arm)]
     fn tick() {
         let mut cpu = create_cpu();
@@ -3883,12 +3957,12 @@ mod test_cpu {
         cpu.run_soc(1);
 
         assert_eq!(DRAM_BASE as i64 + 4, cpu.read_pc());
-        assert_eq!(1, cpu.read_register(1));
+        assert_eq!(1, cpu.read_register(x(1)));
 
         cpu.run_soc(1);
 
         assert_eq!(DRAM_BASE as i64 + 6, cpu.read_pc());
-        assert_eq!(8, cpu.read_register(8));
+        assert_eq!(8, cpu.read_register(x(8)));
     }
 
     #[test]
@@ -3903,13 +3977,13 @@ mod test_cpu {
             Err(_e) => panic!("Failed to store"),
         }
         assert_eq!(DRAM_BASE as i64, cpu.read_pc());
-        assert_eq!(0, cpu.read_register(10));
+        assert_eq!(0, cpu.read_register(x(10)));
         if let Err(exc) = cpu.step_cpu() {
             cpu.handle_exception(&exc);
         }
         assert_eq!(DRAM_BASE as i64 + 4, cpu.read_pc());
         // "addi a0, a0, a12" instruction writes 12 to a0 register.
-        assert_eq!(12, cpu.read_register(10));
+        assert_eq!(12, cpu.read_register(x(10)));
     }
 
     #[test]
@@ -4063,15 +4137,15 @@ mod test_cpu {
         }
 
         // Test x0
-        assert_eq!(0, cpu.read_register(0));
+        assert_eq!(0, cpu.read_register(x(0)));
         cpu.run_soc(1); // Execute  "addi x0, x0, 1"
         // x0 is still zero because it's hardcoded zero
-        assert_eq!(0, cpu.read_register(0));
+        assert_eq!(0, cpu.read_register(x(0)));
 
         // Test x1
-        assert_eq!(0, cpu.read_register(1));
+        assert_eq!(0, cpu.read_register(x(1)));
         cpu.run_soc(1); // Execute  "addi x1, x1, 1"
         // x1 is not hardcoded zero
-        assert_eq!(1, cpu.read_register(1));
+        assert_eq!(1, cpu.read_register(x(1)));
     }
 }

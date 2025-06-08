@@ -168,8 +168,9 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `reg` register number. Must be 0-31.
-    pub fn read_register(&mut self, reg: u8) -> u64 {
-        self.emulator.get_mut_cpu().read_register(reg) as u64
+    pub fn read_register(&mut self, _reg: u8) -> u64 {
+        todo!("re-enable reading registers from WASM")
+        // self.emulator.get_mut_cpu().read_register(reg) as u64
     }
 
     /// Reads Program Counter content.

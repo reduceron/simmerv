@@ -295,11 +295,11 @@ export class WasmRiscv {
      *
      * # Arguments
      * * `reg` register number. Must be 0-31.
-     * @param {number} reg
+     * @param {number} _reg
      * @returns {bigint}
      */
-    read_register(reg) {
-        const ret = wasm.wasmriscv_read_register(this.__wbg_ptr, reg);
+    read_register(_reg) {
+        const ret = wasm.wasmriscv_read_register(this.__wbg_ptr, _reg);
         return BigInt.asUintN(64, ret);
     }
     /**

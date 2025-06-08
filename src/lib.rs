@@ -4,6 +4,7 @@
 const TEST_MEMORY_CAPACITY: usize = 1024 * 1024 * 256;
 const PROGRAM_MEMORY_CAPACITY: usize = 1024 * 1024 * 512; // big enough to run Linux and xv6
 
+pub mod bounded;
 pub mod cpu;
 pub mod csr;
 mod dag_decoder;
@@ -109,10 +110,10 @@ impl Emulator {
             self.tick(1);
             let cycle = self.cpu.cycle;
             print!("{cycle:5} {s:72}");
-            if wbr != 0 {
-                println!("{:16x}", self.cpu.read_register(wbr as u8));
-            } else {
+            if wbr.is_x0_dest() {
                 println!();
+            } else {
+                println!("{:16x}", self.cpu.read_register(wbr));
             }
             //let _ = io::stdout().flush();
 
