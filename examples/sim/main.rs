@@ -4,6 +4,7 @@ mod popup_terminal;
 
 use crate::dummy_terminal::DummyTerminal;
 use crate::popup_terminal::PopupTerminal;
+use anyhow::anyhow;
 use getopts::Options;
 use simmerv::Emulator;
 use simmerv::terminal::Terminal;
@@ -28,7 +29,7 @@ fn get_terminal(terminal_type: &TerminalType) -> Box<dyn Terminal> {
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
@@ -100,8 +101,15 @@ fn main() -> std::io::Result<()> {
         TerminalType::PopupTerminal
     };
 
+    let mut symbols = std::collections::BTreeMap::new();
     let mut emulator = Emulator::new(get_terminal(&terminal_type));
-    emulator.setup_program(elf_contents);
+    emulator
+        .setup_program(&elf_contents, 0x80000000, &mut symbols)
+        .map_err(|e| anyhow!(e))?;
+    if let Some(addr) = symbols.get("tohost") {
+        emulator.tohost_addr = *addr;
+    }
+
     emulator.setup_filesystem(fs_contents);
     if has_dtb {
         emulator.setup_dtb(&dtb_contents);

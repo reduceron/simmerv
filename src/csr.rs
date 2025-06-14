@@ -18,15 +18,16 @@ pub enum Csr {
     Sstatus = 0x100,
     Sedeleg = 0x102,
     Sideleg = 0x103,
+    Scounteren = 0x106,
     Sie = 0x104,
     Stvec = 0x105,
-    Csr106 = 0x106,
     Sscratch = 0x140,
     Sepc = 0x141,
     Scause = 0x142,
     Stval = 0x143,
     Sip = 0x144,
     Satp = 0x180,
+
     Mstatus = 0x300,
     Misa = 0x301,
     Medeleg = 0x302,
@@ -167,6 +168,7 @@ pub const fn legal(csr: Csr) -> bool {
             | Csr::Sedeleg
             | Csr::Sepc
             | Csr::Sideleg
+            | Csr::Scounteren
             | Csr::Sie
             | Csr::Sip
             | Csr::Sscratch
@@ -182,7 +184,6 @@ pub const fn legal(csr: Csr) -> bool {
             | Csr::Ustatus
             | Csr::Utval
             | Csr::Utvec
-            | Csr::Csr106
             | Csr::Csr306
     )
 }

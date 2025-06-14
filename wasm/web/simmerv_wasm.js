@@ -191,19 +191,6 @@ export class WasmRiscv {
         wasm.wasmriscv_setup_program(this.__wbg_ptr, ptr0, len0);
     }
     /**
-     * Loads symbols of program and adds them to symbol - virtual address
-     * mapping in `Emulator`.
-     *
-     * # Arguments
-     * * `content` Program binary
-     * @param {Uint8Array} content
-     */
-    load_program_for_symbols(content) {
-        const ptr0 = passArray8ToWasm0(content, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.wasmriscv_load_program_for_symbols(this.__wbg_ptr, ptr0, len0);
-    }
-    /**
      * Sets up filesystem. Use this method if program (e.g. Linux) uses
      * filesystem. This method is expected to be called up to only once.
      *
@@ -249,13 +236,14 @@ export class WasmRiscv {
         wasm.wasmriscv_run_cycles(this.__wbg_ptr, cycles);
     }
     /**
-     * Runs program until breakpoints. Also known as debugger's continue command.
-     * This method takes `max_cycles`. If the program doesn't hit any breakpoint
-     * in `max_cycles` cycles this method returns `false`. Otherwise `true`.
+     * Runs program until breakpoints. Also known as debugger's continue
+     * command. This method takes `max_cycles`. If the program doesn't hit
+     * any breakpoint in `max_cycles` cycles this method returns `false`.
+     * Otherwise `true`.
      *
-     * Even without this method, you can write the same behavior JavaScript code
-     * as the following code. But JS-WASM bridge cost isn't ignorable now. So
-     * this method has been introduced.
+     * Even without this method, you can write the same behavior JavaScript
+     * code as the following code. But JS-WASM bridge cost isn't ignorable
+     * now. So this method has been introduced.
      *
      * ```ignore
      * const runUntilBreakpoints = (riscv, breakpoints, maxCycles) => {
@@ -360,8 +348,8 @@ export class WasmRiscv {
      *
      * # Arguments
      * * `s` Symbol strings
-     * * `error` If symbol is not found error[0] holds non-zero.
-     *    Otherwize zero.
+     * * `error` If symbol is not found error[0] holds non-zero. Otherwize
+     *   zero.
      * @param {string} s
      * @param {Uint8Array} error
      * @returns {bigint}

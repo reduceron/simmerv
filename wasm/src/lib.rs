@@ -64,15 +64,10 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `content` Program binary
-    pub fn setup_program(&mut self, content: Vec<u8>) { self.emulator.setup_program(content); }
-
-    /// Loads symbols of program and adds them to symbol - virtual address
-    /// mapping in `Emulator`.
-    ///
-    /// # Arguments
-    /// * `content` Program binary
-    pub fn load_program_for_symbols(&mut self, content: Vec<u8>) {
-        self.emulator.load_program_for_symbols(content);
+    pub fn setup_program(&mut self, content: Vec<u8>) {
+        self.emulator
+            .setup_program(&content, 0x80000000, &mut std::collections::BTreeMap::new())
+            .unwrap();
     }
 
     /// Sets up filesystem. Use this method if program (e.g. Linux) uses
