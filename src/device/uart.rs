@@ -88,9 +88,7 @@ impl Uart {
     /// while drivers rarely rely on the behavior of "Level-triggered" interrupt
     /// which keeps interrupting while interrupt pending signal is asserted.
     #[must_use]
-    pub const fn is_interrupting(&self) -> bool {
-        self.interrupting
-    }
+    pub const fn is_interrupting(&self) -> bool { self.interrupting }
 
     const fn update_iir(&mut self) {
         let rx_ip = (self.ier & IER_RXINT_BIT) != 0 && self.rbr != 0;
@@ -182,7 +180,5 @@ impl Uart {
     }
 
     /// Returns mutable reference to `Terminal`.
-    pub fn get_mut_terminal(&mut self) -> &mut Box<dyn Terminal> {
-        &mut self.terminal
-    }
+    pub fn get_mut_terminal(&mut self) -> &mut Box<dyn Terminal> { &mut self.terminal }
 }

@@ -9,10 +9,13 @@ use crate::device::virtio_block_disk::VirtioBlockDisk;
 pub use crate::memory::*;
 use crate::riscv;
 use crate::terminal::Terminal;
-use cpu::{
-    CONFIG_SW_MANAGED_A_AND_D, Exception, MSTATUS_MPP_SHIFT, MSTATUS_MPRV, MSTATUS_MXR,
-    MSTATUS_SUM, PG_SHIFT,
-};
+use cpu::CONFIG_SW_MANAGED_A_AND_D;
+use cpu::Exception;
+use cpu::MSTATUS_MPP_SHIFT;
+use cpu::MSTATUS_MPRV;
+use cpu::MSTATUS_MXR;
+use cpu::MSTATUS_SUM;
+use cpu::PG_SHIFT;
 use csr::SATP_MODE_MASK;
 use csr::SATP_MODE_SHIFT;
 use csr::SATP_PPN_MASK;
@@ -102,17 +105,14 @@ impl Mmu {
     ///
     /// # Arguments
     /// * `capacity`
-    pub fn init_memory(&mut self, capacity: usize) {
-        self.memory.init(capacity);
-    }
+    pub fn init_memory(&mut self, capacity: usize) { self.memory.init(capacity); }
 
-    /// Initializes Virtio block disk. This method is expected to be called only once.
+    /// Initializes Virtio block disk. This method is expected to be called only
+    /// once.
     ///
     /// # Arguments
     /// * `data` Filesystem binary content
-    pub fn init_disk(&mut self, data: Vec<u8>) {
-        self.disk.init(data);
-    }
+    pub fn init_disk(&mut self, data: Vec<u8>) { self.disk.init(data); }
 
     /// Overrides default Device tree configuration.
     ///
@@ -237,8 +237,8 @@ impl Mmu {
         }
     }
 
-    /// Loads eight bytes as i64. This method takes virtual address and translates
-    /// into physical address inside.
+    /// Loads eight bytes as i64. This method takes virtual address and
+    /// translates into physical address inside.
     ///
     /// # Arguments
     /// * `va` Virtual address
@@ -268,8 +268,8 @@ impl Mmu {
         })
     }
 
-    /// Stores multiple bytes. This method takes a virtual address and translates
-    /// it into physical address inside.
+    /// Stores multiple bytes. This method takes a virtual address and
+    /// translates it into physical address inside.
     ///
     /// # Arguments
     /// * `va` Virtual address
@@ -548,7 +548,8 @@ impl Mmu {
     }
 
     /// # Errors
-    /// If this fails then the error will have the exception that should be raised
+    /// If this fails then the error will have the exception that should be
+    /// raised
     pub fn translate_address(
         &mut self,
         address: u64,
@@ -734,19 +735,13 @@ impl Mmu {
 
     /// Returns immutable reference to `Clint`.
     #[must_use]
-    pub const fn get_clint(&self) -> &Clint {
-        &self.clint
-    }
+    pub const fn get_clint(&self) -> &Clint { &self.clint }
 
     /// Returns mutable reference to `Clint`.
-    pub const fn get_mut_clint(&mut self) -> &mut Clint {
-        &mut self.clint
-    }
+    pub const fn get_mut_clint(&mut self) -> &mut Clint { &mut self.clint }
 
     /// Returns mutable reference to `Uart`.
-    pub const fn get_mut_uart(&mut self) -> &mut Uart {
-        &mut self.uart
-    }
+    pub const fn get_mut_uart(&mut self) -> &mut Uart { &mut self.uart }
 }
 
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)] // XXX Try to remove this later when the u64 -> i64 conversion is done

@@ -55,9 +55,7 @@ pub struct VirtioBlockDisk {
 }
 
 impl Default for VirtioBlockDisk {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl VirtioBlockDisk {
@@ -93,9 +91,7 @@ impl VirtioBlockDisk {
     }
 
     /// Indicates whether `VirtioBlockDisk` raises an interrupt signal
-    pub const fn is_interrupting(&mut self) -> bool {
-        self.interrupt_status & 1 == 1
-    }
+    pub const fn is_interrupting(&mut self) -> bool { self.interrupt_status & 1 == 1 }
 
     /// Initializes filesystem content. The method is expected to be called
     /// only up to once.
@@ -103,9 +99,7 @@ impl VirtioBlockDisk {
     /// # Arguments
     /// * `contents` filesystem content binary
     #[allow(clippy::cast_lossless)]
-    pub fn init(&mut self, contents: Vec<u8>) {
-        self.contents = contents;
-    }
+    pub fn init(&mut self, contents: Vec<u8>) { self.contents = contents; }
 
     /// Runs one cycle. Data transfer between main memory and block device
     /// can happen depending on condition.
@@ -207,7 +201,8 @@ impl VirtioBlockDisk {
     /// * `address`
     /// * `value`
     /// # Panics
-    /// Will panic if multi queue are attempted enabled (XXX should probably just ignore)
+    /// Will panic if multi queue are attempted enabled (XXX should probably
+    /// just ignore)
     #[allow(clippy::cast_lossless, clippy::too_many_lines)]
     pub fn store(&mut self, address: u64, value: u8) {
         match address {
@@ -415,9 +410,7 @@ impl VirtioBlockDisk {
         );
     }
 
-    const fn get_page_address(&self) -> u64 {
-        self.queue_pfn as u64 * self.guest_page_size as u64
-    }
+    const fn get_page_address(&self) -> u64 { self.queue_pfn as u64 * self.guest_page_size as u64 }
 
     // Virtqueue layout: Starting at page address
     //
@@ -452,9 +445,7 @@ impl VirtioBlockDisk {
     //   uint32 len;
     // }
 
-    const fn get_base_desc_address(&self) -> u64 {
-        self.get_page_address()
-    }
+    const fn get_base_desc_address(&self) -> u64 { self.get_page_address() }
 
     fn get_base_avail_address(&self) -> u64 {
         self.get_base_desc_address() + u64::from(self.queue_size) * 16

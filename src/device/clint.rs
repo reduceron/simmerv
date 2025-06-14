@@ -1,6 +1,7 @@
 #![allow(clippy::unreadable_literal)]
 
-use crate::cpu::{MIP_MSIP, MIP_MTIP};
+use crate::cpu::MIP_MSIP;
+use crate::cpu::MIP_MTIP;
 use wasm_timer::SystemTime;
 
 /// Emulates CLINT known as Timer. Refer to the [specification](https://sifive.cdn.prismic.io/sifive%2Fc89f6e5a-cf9e-44c3-a3db-04420702dcc1_sifive+e31+manual+v19.08.pdf)
@@ -14,9 +15,7 @@ pub struct Clint {
 }
 
 impl Default for Clint {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Clint {
@@ -182,9 +181,7 @@ impl Clint {
     /// Reads `mtime` register content
     #[must_use]
     #[allow(dead_code)]
-    pub const fn read_mtime(&self) -> u64 {
-        self.mtime_system.wrapping_add(self.mtime_delta)
-    }
+    pub const fn read_mtime(&self) -> u64 { self.mtime_system.wrapping_add(self.mtime_delta) }
 
     /// Writes to `mtime` register content
     #[allow(dead_code)]

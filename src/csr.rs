@@ -1,5 +1,6 @@
 use num_derive::FromPrimitive;
-use std::fmt::{Display, Formatter};
+use std::fmt::Display;
+use std::fmt::Formatter;
 
 #[derive(FromPrimitive, Debug, Clone, Copy)]
 pub enum Csr {
@@ -100,7 +101,8 @@ pub const MSTATUS_TSR: u64 = 1 << 22;
 pub const MSTATUS_UXL_MASK: u64 = 3 << MSTATUS_UXL_SHIFT;
 pub const MSTATUS_SXL_MASK: u64 = 3 << MSTATUS_SXL_SHIFT;
 
-// MSTATUS_MASK are the only fields that are directly writable with an csr instruction
+// MSTATUS_MASK are the only fields that are directly writable with an csr
+// instruction
 pub const MSTATUS_MASK: u64 = MSTATUS_SIE
     | MSTATUS_MIE
     | MSTATUS_SPIE

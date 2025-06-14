@@ -10,7 +10,14 @@ use crate::riscv;
 use crate::rvc;
 use crate::terminal;
 pub use csr::*;
-use fp::{RoundingMode, Sf, Sf32, Sf64, cvt_i32_sf32, cvt_i64_sf32, cvt_u32_sf32, cvt_u64_sf32};
+use fp::RoundingMode;
+use fp::Sf;
+use fp::Sf32;
+use fp::Sf64;
+use fp::cvt_i32_sf32;
+use fp::cvt_i64_sf32;
+use fp::cvt_u32_sf32;
+use fp::cvt_u64_sf32;
 use log;
 use num_traits::FromPrimitive;
 use riscv::MemoryAccessType;
@@ -30,9 +37,7 @@ pub const PG_SHIFT: usize = 12; // 4K page size
 pub type Reg = Bounded<65>;
 impl Reg {
     #[must_use]
-    pub const fn is_x0_dest(self) -> bool {
-        self.get() == 64
-    }
+    pub const fn is_x0_dest(self) -> bool { self.get() == 64 }
 }
 
 /// Generate a source integer `Reg`
@@ -155,9 +160,7 @@ impl Cpu {
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn read_x(&self, r: Reg) -> i64 {
-        self.rf[r]
-    }
+    fn read_x(&self, r: Reg) -> i64 { self.rf[r] }
 
     #[allow(clippy::inline_always)]
     #[inline(always)]
@@ -169,26 +172,20 @@ impl Cpu {
     /// Reads Program counter
     #[must_use]
     #[allow(clippy::cast_sign_loss)]
-    pub const fn read_pc(&self) -> i64 {
-        self.pc
-    }
+    pub const fn read_pc(&self) -> i64 { self.pc }
 
     /// Updates Program Counter
     ///
     /// # Arguments
     /// * `value`
-    pub const fn update_pc(&mut self, value: i64) {
-        self.pc = value & !1;
-    }
+    pub const fn update_pc(&mut self, value: i64) { self.pc = value & !1; }
 
     /// Reads integer register
     ///
     /// # Arguments
     /// * `reg` Register number. Must be 0-31
     #[must_use]
-    pub fn read_register(&self, reg: Reg) -> i64 {
-        self.rf[reg]
-    }
+    pub fn read_register(&self, reg: Reg) -> i64 { self.rf[reg] }
 
     /// Checks that float instructions are enabled and
     /// that the rounding mode is legal (XXX this should be part of format!)
@@ -203,7 +200,8 @@ impl Cpu {
         }
     }
 
-    /// Runs program N cycles. Fetch, decode, and execution are completed in a cycle so far.
+    /// Runs program N cycles. Fetch, decode, and execution are completed in a
+    /// cycle so far.
     #[allow(clippy::cast_sign_loss)]
     pub fn run_soc(&mut self, cpu_steps: usize) {
         for _ in 0..cpu_steps {
@@ -252,10 +250,12 @@ impl Cpu {
 
     #[allow(clippy::cast_sign_loss)]
     fn handle_interrupt(&mut self) {
-        use self::Trap::{
-            MachineExternalInterrupt, MachineSoftwareInterrupt, MachineTimerInterrupt,
-            SupervisorExternalInterrupt, SupervisorSoftwareInterrupt, SupervisorTimerInterrupt,
-        };
+        use self::Trap::MachineExternalInterrupt;
+        use self::Trap::MachineSoftwareInterrupt;
+        use self::Trap::MachineTimerInterrupt;
+        use self::Trap::SupervisorExternalInterrupt;
+        use self::Trap::SupervisorSoftwareInterrupt;
+        use self::Trap::SupervisorTimerInterrupt;
         let minterrupt = self.mmu.mip & self.read_csr_raw(Csr::Mie);
         if minterrupt == 0 {
             return;
@@ -284,7 +284,8 @@ impl Cpu {
 
     fn handle_exception(&mut self, exc: &Exception) {
         // XXX If we pass in the address we don't need
-        // self.pc, but that requires us to call handle exception from a centrol location with access to the pc.
+        // self.pc, but that requires us to call handle exception from a centrol
+        // location with access to the pc.
         self.handle_trap(exc, self.insn_addr, false);
     }
 
@@ -456,14 +457,16 @@ impl Cpu {
             PrivMode::M => {
                 let status = self.read_csr_raw(Csr::Mstatus);
                 let mie = (status >> 3) & 1;
-                // clear MIE[3], override MPIE[7] with MIE[3], override MPP[12:11] with current privilege encoding
+                // clear MIE[3], override MPIE[7] with MIE[3], override MPP[12:11] with current
+                // privilege encoding
                 let new_status = (status & !0x1888) | (mie << 7) | (current_priv_encoding << 11);
                 self.write_csr_raw(Csr::Mstatus, new_status);
             }
             PrivMode::S => {
                 let status = self.read_csr_raw(Csr::Sstatus);
                 let sie = (status >> 1) & 1;
-                // clear SIE[1], override SPIE[5] with SIE[1], override SPP[8] with current privilege encoding
+                // clear SIE[1], override SPIE[5] with SIE[1], override SPP[8] with current
+                // privilege encoding
                 let new_status =
                     (status & !0x122) | (sie << 5) | ((current_priv_encoding & 1) << 8);
                 self.write_csr_raw(Csr::Sstatus, new_status);
@@ -493,15 +496,17 @@ impl Cpu {
         Some(csr)
     }
 
-    // XXX This is still so far from complete; copy the logic from Dromajo and review
-    // each CSR.  Do Not Blanket allow reads and writes from unsupported CSRs
+    // XXX This is still so far from complete; copy the logic from Dromajo and
+    // review each CSR.  Do Not Blanket allow reads and writes from unsupported
+    // CSRs
     #[allow(clippy::cast_sign_loss)]
     fn read_csr(&self, csrno: u16) -> Result<u64, Exception> {
         use PrivMode::S;
 
         let illegal = Err(Exception {
             trap: Trap::IllegalInstruction,
-            tval: i64::from(self.insn), // XXX we could assign this outside, eliminating the need for self.insn here
+            tval: i64::from(self.insn), /* XXX we could assign this outside, eliminating the need
+                                         * for self.insn here */
         });
 
         let Some(csr) = self.has_csr_access_privilege(csrno) else {
@@ -524,7 +529,8 @@ impl Cpu {
     fn write_csr(&mut self, csrno: u16, mut value: u64) -> Result<(), Exception> {
         let illegal = Err(Exception {
             trap: Trap::IllegalInstruction,
-            tval: i64::from(self.insn), // XXX we could assign this outside, eliminating the need for self.insn here
+            tval: i64::from(self.insn), /* XXX we could assign this outside, eliminating the need
+                                         * for self.insn here */
         });
 
         let Some(csr) = self.has_csr_access_privilege(csrno) else {
@@ -644,32 +650,22 @@ impl Cpu {
                 self.mmu.satp = value;
                 self.mmu.clear_page_cache();
             }
-            /*Csr::Cycle |*/ Csr::Mcycle => self.cycle = value,
+            /* Csr::Cycle | */ Csr::Mcycle => self.cycle = value,
             _ => {
                 self.csr[csr as usize] = value;
             }
         }
     }
 
-    fn _set_fcsr_nv(&mut self) {
-        self.add_to_fflags(0x10);
-    }
+    fn _set_fcsr_nv(&mut self) { self.add_to_fflags(0x10); }
 
-    fn set_fcsr_dz(&mut self) {
-        self.add_to_fflags(8);
-    }
+    fn set_fcsr_dz(&mut self) { self.add_to_fflags(8); }
 
-    fn _set_fcsr_of(&mut self) {
-        self.add_to_fflags(4);
-    }
+    fn _set_fcsr_of(&mut self) { self.add_to_fflags(4); }
 
-    fn _set_fcsr_uf(&mut self) {
-        self.add_to_fflags(2);
-    }
+    fn _set_fcsr_uf(&mut self) { self.add_to_fflags(2); }
 
-    fn _set_fcsr_nx(&mut self) {
-        self.add_to_fflags(1);
-    }
+    fn _set_fcsr_nx(&mut self) { self.add_to_fflags(1); }
 
     /// Disassembles an instruction pointed by Program Counter and
     /// and return the [possibly] writeback register
@@ -702,9 +698,7 @@ impl Cpu {
     }
 
     /// Returns mutable `Mmu`
-    pub const fn get_mut_mmu(&mut self) -> &mut Mmu {
-        &mut self.mmu
-    }
+    pub const fn get_mut_mmu(&mut self) -> &mut Mmu { &mut self.mmu }
 
     /// Returns mutable `Terminal`
     pub fn get_mut_terminal(&mut self) -> &mut Box<dyn Terminal> {
@@ -736,13 +730,9 @@ impl Cpu {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read_f64(&self, r: Reg) -> f64 {
-        f64::from_bits(self.read_f(r) as u64)
-    }
+    fn read_f64(&self, r: Reg) -> f64 { f64::from_bits(self.read_f(r) as u64) }
 
-    fn write_f64(&mut self, r: Reg, f: f64) {
-        self.write_f(r, f.to_bits() as i64);
-    }
+    fn write_f64(&mut self, r: Reg, f: f64) { self.write_f(r, f.to_bits() as i64); }
 
     fn read_frm(&self) -> RoundingMode {
         assert_ne!(self.fs, 0);
@@ -2313,13 +2303,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_r(word);
             let s1 = cpu.read_x(f.rs1) as u64;
             let s2 = cpu.read_x(f.rs2) as u64;
-            cpu.write_x(
-                f.rd,
-                match s2 {
-                    0 => s1 as i64,
-                    _ => s1.wrapping_rem(s2) as i64,
-                },
-            );
+            cpu.write_x(f.rd, match s2 {
+                0 => s1 as i64,
+                _ => s1.wrapping_rem(s2) as i64,
+            });
             Ok(())
         },
         disassemble: dump_format_r,
@@ -2401,13 +2388,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_r(word);
             let s1 = cpu.read_x(f.rs1) as u32;
             let s2 = cpu.read_x(f.rs2) as u32;
-            cpu.write_x(
-                f.rd,
-                match s2 {
-                    0 => i64::from(s1 as i32),
-                    _ => i64::from(s1.wrapping_rem(s2) as i32),
-                },
-            );
+            cpu.write_x(f.rd, match s2 {
+                0 => i64::from(s1 as i32),
+                _ => i64::from(s1.wrapping_rem(s2) as i32),
+            });
             Ok(())
         },
         disassemble: dump_format_r,
@@ -3907,14 +3891,10 @@ mod test_cpu {
     use crate::mmu::DRAM_BASE;
     use crate::terminal::DummyTerminal;
 
-    fn create_cpu() -> Cpu {
-        Cpu::new(Box::new(DummyTerminal::new()))
-    }
+    fn create_cpu() -> Cpu { Cpu::new(Box::new(DummyTerminal::new())) }
 
     #[test]
-    fn initialize() {
-        let _cpu = create_cpu();
-    }
+    fn initialize() { let _cpu = create_cpu(); }
 
     #[test]
     fn update_pc() {

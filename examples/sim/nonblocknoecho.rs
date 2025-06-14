@@ -1,4 +1,6 @@
-use std::io::{self, Read, Stdin};
+use std::io::Read;
+use std::io::Stdin;
+use std::io::{self};
 
 pub struct NonblockNoEcho {
     stdin: i32,
@@ -10,7 +12,12 @@ impl NonblockNoEcho {
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     pub fn new(capture_ctrlc: bool) -> Self {
         use std::os::unix::io::AsRawFd;
-        use termios::{ECHO, ICANON, ISIG, TCSANOW, Termios, tcsetattr};
+        use termios::ECHO;
+        use termios::ICANON;
+        use termios::ISIG;
+        use termios::TCSANOW;
+        use termios::Termios;
+        use termios::tcsetattr;
         let stdin: i32 = std::io::stdin().as_raw_fd();
         assert_eq!(stdin, 0);
 

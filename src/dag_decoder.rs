@@ -8,12 +8,11 @@
 ///
 /// Todo:
 /// - compress interiour levels too (might not be worthwhile)
-/// - MAYBE: switch to relative encoding; this is only a win if it
-///   enables using u8 instead of u16
-/// - Replace the compress expander table with actual compressed
-///   instructions and fold compressed decoding into this.  This
-///   is expected to be a big win as the D$ pressure will down down
-///   significantly.
+/// - MAYBE: switch to relative encoding; this is only a win if it enables using
+///   u8 instead of u16
+/// - Replace the compress expander table with actual compressed instructions
+///   and fold compressed decoding into this.  This is expected to be a big win
+///   as the D$ pressure will down down significantly.
 
 #[derive(Debug)]
 enum DecoderTree {
@@ -165,8 +164,8 @@ fn search(
     log::trace!("Best size {best_size}");
 
     if depth == 0 {
-        // We have reached the bottom; each partition better at most have a single member
-        // We reserve the last entry for illegal instructions
+        // We have reached the bottom; each partition better at most have a single
+        // member We reserve the last entry for illegal instructions
         let mut res = vec![];
         for p in &best_partition {
             if p.is_empty() {

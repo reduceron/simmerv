@@ -15,13 +15,9 @@ pub const DRAM_BASE: u64 = 0x80000000;
 pub const MEMORY_BASE: i64 = DRAM_BASE as i64;
 pub struct Memory(Vec<u8>);
 impl Memory {
-    pub const fn new() -> Self {
-        Self(vec![])
-    }
+    pub const fn new() -> Self { Self(vec![]) }
 
-    pub fn init(&mut self, capacity: usize) {
-        self.0.resize(capacity, 0);
-    }
+    pub fn init(&mut self, capacity: usize) { self.0.resize(capacity, 0); }
 
     #[allow(clippy::cast_possible_truncation)]
     pub fn read_u8(&mut self, p_address: u64) -> u8 {
@@ -103,7 +99,8 @@ impl Memory {
     pub fn write_u32(&mut self, pa: u64, value: u32) -> Result<(), ()> {
         let offset = pa.wrapping_sub(DRAM_BASE) as usize;
         if self.0.len() < offset + 4 {
-            // XXX would still fail DRAM_BASE-3..DRAM_BASE-1 but the more exhausing checking is expensive
+            // XXX would still fail DRAM_BASE-3..DRAM_BASE-1 but the more exhausing checking
+            // is expensive
             return Err(());
         }
         self.0[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
@@ -116,7 +113,8 @@ impl Memory {
     pub fn write_u64(&mut self, pa: u64, value: u64) -> Result<(), ()> {
         let offset = pa.wrapping_sub(DRAM_BASE) as usize;
         if self.0.len() < offset + 8 {
-            // XXX would still fail DRAM_BASE-3..DRAM_BASE-1 but the more exhausing checking is expensive
+            // XXX would still fail DRAM_BASE-3..DRAM_BASE-1 but the more exhausing checking
+            // is expensive
             return Err(());
         }
         self.0[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
@@ -145,7 +143,5 @@ impl Memory {
 }
 
 impl Default for Memory {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }

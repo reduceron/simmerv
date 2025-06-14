@@ -77,19 +77,13 @@ pub trait Sf {
     fn unbox(a: i64) -> i64;
 
     #[must_use]
-    fn sign(a: i64) -> i64 {
-        (a >> (Self::N - 1)) & 1
-    }
+    fn sign(a: i64) -> i64 { (a >> (Self::N - 1)) & 1 }
 
     #[must_use]
-    fn exp(a: i64) -> i64 {
-        (a >> Self::MANT_SIZE) & Self::EXP_MASK
-    }
+    fn exp(a: i64) -> i64 { (a >> Self::MANT_SIZE) & Self::EXP_MASK }
 
     #[must_use]
-    fn mant(a: i64) -> i64 {
-        a & Self::MANT_MASK
-    }
+    fn mant(a: i64) -> i64 { a & Self::MANT_MASK }
 
     #[must_use]
     fn pack(sign: i64, exp: i64, mant: i64) -> i64 {
@@ -139,9 +133,7 @@ pub trait Sf {
     }
 
     #[must_use]
-    fn is_nan(a: i64) -> bool {
-        Self::exp(a) == Self::EXP_MASK && Self::mant(a) != 0
-    }
+    fn is_nan(a: i64) -> bool { Self::exp(a) == Self::EXP_MASK && Self::mant(a) != 0 }
 
     #[must_use]
     fn is_signan(a: i64) -> bool {
@@ -218,9 +210,7 @@ impl Sf for Sf64 {
     const EXP_SIZE: usize = 11;
     const QNAN: i64 = 0x7ff8_0000_0000_0000; // XXX Check this
 
-    fn unbox(r: i64) -> i64 {
-        r
-    }
+    fn unbox(r: i64) -> i64 { r }
 }
 
 #[must_use]
@@ -366,9 +356,7 @@ mod test {
         NAN_BOX_F32 | (sign << 31) | (exp << 23) | mant
     }
 
-    const fn fp64(sign: i64, exp: i64, mant: i64) -> i64 {
-        (sign << 63) | (exp << 52) | mant
-    }
+    const fn fp64(sign: i64, exp: i64, mant: i64) -> i64 { (sign << 63) | (exp << 52) | mant }
 
     /*    fn fp64(sign: i64, exp: i64, mant: i64) -> i64 {
         sign << 63 | exp << 52 | mant

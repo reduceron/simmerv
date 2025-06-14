@@ -1,4 +1,5 @@
-use std::io::{Write, stdout};
+use std::io::Write;
+use std::io::stdout;
 use std::str;
 
 use simmerv::terminal::Terminal;
@@ -8,9 +9,7 @@ use simmerv::terminal::Terminal;
 pub struct DummyTerminal {}
 
 impl DummyTerminal {
-    pub const fn new() -> Self {
-        Self {}
-    }
+    pub const fn new() -> Self { Self {} }
 }
 
 impl Terminal for DummyTerminal {
@@ -25,15 +24,11 @@ impl Terminal for DummyTerminal {
         let _ = stdout().flush();
     }
 
-    fn get_input(&mut self) -> u8 {
-        0
-    }
+    fn get_input(&mut self) -> u8 { 0 }
 
     // Wasm specific methods. No use.
 
     fn put_input(&mut self, _value: u8) {}
 
-    fn get_output(&mut self) -> u8 {
-        0
-    }
+    fn get_output(&mut self) -> u8 { 0 }
 }

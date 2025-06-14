@@ -1,6 +1,7 @@
 #![allow(clippy::unreadable_literal)]
 
-use crate::cpu::{MIP_MEIP, MIP_SEIP};
+use crate::cpu::MIP_MEIP;
+use crate::cpu::MIP_SEIP;
 
 // Based on SiFive Interrupt Cookbook
 // https://sifive.cdn.prismic.io/sifive/0d163928-2128-42be-a75a-464df65e04e0_sifive-interrupt-cookbook.pdf
@@ -23,9 +24,7 @@ const VIRTIO_IRQ: u32 = 1;
 const UART_IRQ: u32 = 10;
 
 impl Default for Plic {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Plic {

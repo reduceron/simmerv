@@ -64,9 +64,7 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `content` Program binary
-    pub fn setup_program(&mut self, content: Vec<u8>) {
-        self.emulator.setup_program(content);
-    }
+    pub fn setup_program(&mut self, content: Vec<u8>) { self.emulator.setup_program(content); }
 
     /// Loads symbols of program and adds them to symbol - virtual address
     /// mapping in `Emulator`.
@@ -92,16 +90,12 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `content` DTB content binary
-    pub fn setup_dtb(&mut self, content: Vec<u8>) {
-        self.emulator.setup_dtb(&content);
-    }
+    pub fn setup_dtb(&mut self, content: Vec<u8>) { self.emulator.setup_dtb(&content); }
 
     /// Runs program set by `setup_program()`. The emulator won't stop forever
     /// unless [`riscv-tests`](https://github.com/riscv/riscv-tests) programs.
     /// The emulator stops if program is `riscv-tests` program and it finishes.
-    pub fn run(&mut self) {
-        self.emulator.run(false);
-    }
+    pub fn run(&mut self) { self.emulator.run(false); }
 
     /// Runs program set by `setup_program()` in `cycles` cycles.
     ///
@@ -113,13 +107,14 @@ impl WasmRiscv {
         }
     }
 
-    /// Runs program until breakpoints. Also known as debugger's continue command.
-    /// This method takes `max_cycles`. If the program doesn't hit any breakpoint
-    /// in `max_cycles` cycles this method returns `false`. Otherwise `true`.
+    /// Runs program until breakpoints. Also known as debugger's continue
+    /// command. This method takes `max_cycles`. If the program doesn't hit
+    /// any breakpoint in `max_cycles` cycles this method returns `false`.
+    /// Otherwise `true`.
     ///
-    /// Even without this method, you can write the same behavior JavaScript code
-    /// as the following code. But JS-WASM bridge cost isn't ignorable now. So
-    /// this method has been introduced.
+    /// Even without this method, you can write the same behavior JavaScript
+    /// code as the following code. But JS-WASM bridge cost isn't ignorable
+    /// now. So this method has been introduced.
     ///
     /// ```ignore
     /// const runUntilBreakpoints = (riscv, breakpoints, maxCycles) => {
@@ -174,9 +169,7 @@ impl WasmRiscv {
     }
 
     /// Reads Program Counter content.
-    pub fn read_pc(&self) -> i64 {
-        self.emulator.get_cpu().read_pc()
-    }
+    pub fn read_pc(&self) -> i64 { self.emulator.get_cpu().read_pc() }
 
     /// Gets ascii code byte sent from the emulator to terminal.
     /// The emulator holds output buffer inside. This method returns zero
@@ -194,17 +187,13 @@ impl WasmRiscv {
     ///   }
     /// }
     /// ```
-    pub fn get_output(&mut self) -> u8 {
-        self.emulator.get_mut_terminal().get_output()
-    }
+    pub fn get_output(&mut self) -> u8 { self.emulator.get_mut_terminal().get_output() }
 
     /// Puts ascii code byte sent from terminal to the emulator.
     ///
     /// # Arguments
     /// * `data` Ascii code byte
-    pub fn put_input(&mut self, data: u8) {
-        self.emulator.get_mut_terminal().put_input(data);
-    }
+    pub fn put_input(&mut self, data: u8) { self.emulator.get_mut_terminal().put_input(data); }
 
     /// Enables or disables page cache optimization.
     /// Page cache optimization is an experimental feature.
@@ -212,16 +201,14 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `enabled`
-    pub fn enable_page_cache(&mut self, enabled: bool) {
-        self.emulator.enable_page_cache(enabled);
-    }
+    pub fn enable_page_cache(&mut self, enabled: bool) { self.emulator.enable_page_cache(enabled); }
 
     /// Gets virtual address corresponding to symbol strings.
     ///
     /// # Arguments
     /// * `s` Symbol strings
-    /// * `error` If symbol is not found error[0] holds non-zero.
-    ///    Otherwize zero.
+    /// * `error` If symbol is not found error[0] holds non-zero. Otherwize
+    ///   zero.
     pub fn get_address_of_symbol(&mut self, s: String, error: &mut [u8]) -> u64 {
         match self.emulator.get_addredd_of_symbol(&s) {
             Some(address) => {

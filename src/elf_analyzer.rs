@@ -78,9 +78,7 @@ impl ElfAnalyzer {
     /// # Arguments
     /// * `data` ELF file content binary
     #[must_use]
-    pub const fn new(data: Vec<u8>) -> Self {
-        Self { data }
-    }
+    pub const fn new(data: Vec<u8>) -> Self { Self { data } }
 
     /// Checks if ELF file content is valid
     // @TODO: Validate more precisely
@@ -227,7 +225,6 @@ impl ElfAnalyzer {
     /// # Arguments
     /// * `header`
     /// # Panics
-    ///
     #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     #[must_use]
     pub fn _read_program_headers(&self, header: &Header) -> Vec<ProgramHeader> {
@@ -685,9 +682,7 @@ impl ElfAnalyzer {
     /// # Arguments
     /// * `offset`
     #[must_use]
-    pub fn read_byte(&self, offset: usize) -> u8 {
-        self.data[offset]
-    }
+    pub fn read_byte(&self, offset: usize) -> u8 { self.data[offset] }
 
     /// Reads two bytes from ELF file content
     ///

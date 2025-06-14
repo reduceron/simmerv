@@ -54,7 +54,8 @@ pub struct Emulator {
 
 impl Emulator {
     /// Creates a new `Emulator`. [`Terminal`](terminal/trait.Terminal.html)
-    /// is internally used for transferring input/output data to/from `Emulator`.
+    /// is internally used for transferring input/output data to/from
+    /// `Emulator`.
     ///
     /// # Arguments
     /// * `terminal`
@@ -187,9 +188,10 @@ impl Emulator {
         self.cpu.run_soc(n);
     }
 
-    /// Sets up program run by the program. This method analyzes the passed content
-    /// and configure CPU properly. If the passed contend doesn't seem ELF file,
-    /// it panics. This method is expected to be called only once.
+    /// Sets up program run by the program. This method analyzes the passed
+    /// content and configure CPU properly. If the passed contend doesn't
+    /// seem ELF file, it panics. This method is expected to be called only
+    /// once.
     ///
     /// # Arguments
     /// * `data` Program binary
@@ -220,7 +222,8 @@ impl Emulator {
             }
         }
 
-        // Find program data section named .tohost to detect if the elf file is riscv-tests
+        // Find program data section named .tohost to detect if the elf file is
+        // riscv-tests
         self.tohost_addr = analyzer
             .find_tohost_addr(&program_data_section_headers, &string_table_section_headers)
             .unwrap_or(0);
@@ -324,9 +327,7 @@ impl Emulator {
     ///
     /// # Arguments
     /// * `content` DTB content binary
-    pub fn setup_dtb(&mut self, content: &[u8]) {
-        self.cpu.get_mut_mmu().init_dtb(content);
-    }
+    pub fn setup_dtb(&mut self, content: &[u8]) { self.cpu.get_mut_mmu().init_dtb(content); }
 
     /// Enables or disables page cache optimization.
     /// Page cache optimization is experimental feature.
@@ -339,20 +340,14 @@ impl Emulator {
     }
 
     /// Returns mutable reference to `Terminal`.
-    pub fn get_mut_terminal(&mut self) -> &mut Box<dyn Terminal> {
-        self.cpu.get_mut_terminal()
-    }
+    pub fn get_mut_terminal(&mut self) -> &mut Box<dyn Terminal> { self.cpu.get_mut_terminal() }
 
     /// Returns immutable reference to `Cpu`.
     #[must_use]
-    pub const fn get_cpu(&self) -> &Cpu {
-        &self.cpu
-    }
+    pub const fn get_cpu(&self) -> &Cpu { &self.cpu }
 
     /// Returns mutable reference to `Cpu`.
-    pub const fn get_mut_cpu(&mut self) -> &mut Cpu {
-        &mut self.cpu
-    }
+    pub const fn get_mut_cpu(&mut self) -> &mut Cpu { &mut self.cpu }
 
     /// Returns a virtual address corresponding to symbol strings
     ///
@@ -369,14 +364,10 @@ mod test_emulator {
     use super::*;
     use crate::terminal::DummyTerminal;
 
-    fn create_emu() -> Emulator {
-        Emulator::new(Box::new(DummyTerminal::new()))
-    }
+    fn create_emu() -> Emulator { Emulator::new(Box::new(DummyTerminal::new())) }
 
     #[test]
-    fn initialize() {
-        let _emu = create_emu();
-    }
+    fn initialize() { let _emu = create_emu(); }
 
     #[test]
     #[ignore]

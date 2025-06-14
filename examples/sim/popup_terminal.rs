@@ -1,6 +1,8 @@
 use crate::nonblocknoecho::NonblockNoEcho;
 use simmerv::terminal::Terminal;
-use std::io::{self, Stdout, Write};
+use std::io::Stdout;
+use std::io::Write;
+use std::io::{self};
 
 /// Popup `Terminal` used for desktop program.
 pub struct PopupTerminal {
@@ -30,7 +32,5 @@ impl Terminal for PopupTerminal {
     // Wasm specific methods. No use.
     fn put_input(&mut self, _value: u8) {}
 
-    fn get_output(&mut self) -> u8 {
-        0
-    }
+    fn get_output(&mut self) -> u8 { 0 }
 }
