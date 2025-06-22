@@ -125,11 +125,14 @@ impl Cpu {
     /// * `Terminal`
     #[must_use]
     #[allow(clippy::precedence)]
-    pub fn new(terminal: Box<dyn Terminal>) -> Self {
+    pub fn new(terminal: Box<dyn Terminal>, capacity: usize) -> Self {
         let mut patterns = Vec::new();
         for (p, insn) in INSTRUCTIONS[0..INSTRUCTION_NUM - 1].iter().enumerate() {
             patterns.push((insn.mask & !3, insn.bits & !3, p));
         }
+
+        let mut mmu = Mmu::new(terminal);
+        mmu.init_memory(capacity);
 
         let mut cpu = Self {
             rf: [0; 65],
@@ -144,7 +147,7 @@ impl Cpu {
             insn_addr: 0,
             insn: 0,
             csr: vec![0; 4096].into_boxed_slice(), // XXX MUST GO AWAY SOON
-            mmu: Mmu::new(terminal),
+            mmu,
             reservation: None,
             decode_dag: dag_decoder::new(&patterns),
         };
@@ -3893,7 +3896,7 @@ mod test_cpu {
     use crate::mmu::DRAM_BASE;
     use crate::terminal::DummyTerminal;
 
-    fn create_cpu() -> Cpu { Cpu::new(Box::new(DummyTerminal::new())) }
+    fn create_cpu() -> Cpu { Cpu::new(Box::new(DummyTerminal::new()), 8) }
 
     #[test]
     fn initialize() { let _cpu = create_cpu(); }
@@ -3922,7 +3925,6 @@ mod test_cpu {
     #[allow(clippy::match_wild_err_arm)]
     fn tick() {
         let mut cpu = create_cpu();
-        cpu.get_mut_mmu().init_memory(8);
         cpu.update_pc(DRAM_BASE as i64);
 
         // Write non-compressed "addi x1, x1, 1" instruction
@@ -3951,7 +3953,6 @@ mod test_cpu {
     #[allow(clippy::match_wild_err_arm)]
     fn step_cpu() {
         let mut cpu = create_cpu();
-        cpu.get_mut_mmu().init_memory(4);
         cpu.update_pc(DRAM_BASE as i64);
         // write non-compressed "addi a0, a0, 12" instruction
         match cpu.get_mut_mmu().store_virt_u32(DRAM_BASE, 0xc50513) {
@@ -4006,7 +4007,6 @@ mod test_cpu {
             Ok(inst) => assert_eq!(inst.name, "WFI"),
             Err(_e) => panic!("Failed to decode"),
         }
-        cpu.get_mut_mmu().init_memory(4);
         cpu.update_pc(DRAM_BASE as i64);
         // write WFI instruction
         match cpu.get_mut_mmu().store_virt_u32(DRAM_BASE, wfi_instruction) {
@@ -4035,7 +4035,6 @@ mod test_cpu {
     fn interrupt() {
         let handler_vector = 0x10000000;
         let mut cpu = create_cpu();
-        cpu.get_mut_mmu().init_memory(4);
         // Write non-compressed "addi x0, x0, 1" instruction
         match cpu.get_mut_mmu().store_virt_u32(DRAM_BASE, 0x00100013) {
             Ok(()) => {}
@@ -4077,7 +4076,6 @@ mod test_cpu {
     fn exception() {
         let handler_vector = 0x10000000;
         let mut cpu = create_cpu();
-        cpu.get_mut_mmu().init_memory(4);
         // Write ECALL instruction
         match cpu.get_mut_mmu().store_virt_u32(DRAM_BASE, 0x00000073) {
             Ok(()) => {}
@@ -4104,7 +4102,6 @@ mod test_cpu {
     #[allow(clippy::match_wild_err_arm)]
     fn hardocded_zero() {
         let mut cpu = create_cpu();
-        cpu.get_mut_mmu().init_memory(8);
         cpu.update_pc(DRAM_BASE as i64);
 
         // Write non-compressed "addi x0, x0, 1" instruction

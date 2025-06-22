@@ -3,6 +3,8 @@ use simmerv::default_terminal::DefaultTerminal;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+const WASM_MEMORY_SIZE: usize = 512 * 1024 * 1024;
+
 /// `WasmRiscv` is an interface between user JavaScript code and
 /// WebAssembly RISC-V emulator. The following code is example
 /// JavaScript user code.
@@ -55,7 +57,7 @@ impl WasmRiscv {
     #[allow(clippy::new_without_default)] // #[wasm_bindgen] trait impls are not supported
     pub fn new() -> Self {
         WasmRiscv {
-            emulator: Emulator::new(Box::new(DefaultTerminal::new())),
+            emulator: Emulator::new(Box::new(DefaultTerminal::new()), WASM_MEMORY_SIZE),
         }
     }
 

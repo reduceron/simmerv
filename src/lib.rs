@@ -1,7 +1,5 @@
 #![allow(clippy::unreadable_literal)]
 
-const PROGRAM_MEMORY_CAPACITY: usize = 1024 * 1024 * 512; // big enough to run Linux and xv6
-
 pub mod bounded;
 pub mod cpu;
 pub mod csr;
@@ -54,9 +52,9 @@ impl Emulator {
     /// # Arguments
     /// * `terminal`
     #[must_use]
-    pub fn new(terminal: Box<dyn Terminal>) -> Self {
+    pub fn new(terminal: Box<dyn Terminal>, capacity: usize) -> Self {
         Self {
-            cpu: Cpu::new(terminal),
+            cpu: Cpu::new(terminal, capacity),
 
             symbol_map: FnvHashMap::default(),
 
@@ -200,8 +198,6 @@ impl Emulator {
         load_addr: u64,
         symbols: &mut BTreeMap<String, u64>,
     ) -> Result<(), &'static str> {
-        self.cpu.get_mut_mmu().init_memory(PROGRAM_MEMORY_CAPACITY);
-
         let elf_file = xmas_elf::ElfFile::new(buf)?;
 
         xmas_elf::header::sanity_check(&elf_file)?;
@@ -314,7 +310,7 @@ mod test_emulator {
     use super::*;
     use crate::terminal::DummyTerminal;
 
-    fn create_emu() -> Emulator { Emulator::new(Box::new(DummyTerminal::new())) }
+    fn create_emu() -> Emulator { Emulator::new(Box::new(DummyTerminal::new()), 8) }
 
     #[test]
     fn initialize() { let _emu = create_emu(); }

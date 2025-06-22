@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut symbols = std::collections::BTreeMap::new();
-    let mut emulator = Emulator::new(get_terminal(&terminal_type));
+    let mut emulator = Emulator::new(get_terminal(&terminal_type), 512 * 1024 * 1024);
     emulator
         .setup_program(&elf_contents, 0x80000000, &mut symbols)
         .map_err(|e| anyhow!(e))?;
