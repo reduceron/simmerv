@@ -70,6 +70,7 @@ impl WasmRiscv {
         let startpc = self
             .emulator
             .load_image(
+                "unknown in WASM",
                 &content,
                 Some(0x80000000),
                 &mut std::collections::BTreeMap::new(),

@@ -96,8 +96,8 @@ pub struct Cpu {
     pub insn_addr: i64,
     pub insn: u32,
 
-    // Holds all memory and devices
-    mmu: Mmu,
+    // Holds all memory and devices (XXX: this public mmu suggests we need to rethink the API)
+    pub mmu: Mmu,
 
     // Decoding table
     decode_dag: Vec<u16>,

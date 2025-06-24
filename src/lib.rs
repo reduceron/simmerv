@@ -15,6 +15,8 @@ pub mod terminal;
 
 use crate::cpu::Cpu;
 use crate::terminal::Terminal;
+use anyhow::anyhow;
+use anyhow::bail;
 use fnv::FnvHashMap;
 use std::collections::BTreeMap;
 use xmas_elf::sections::SectionData;
@@ -194,13 +196,32 @@ impl Emulator {
     #[allow(clippy::verbose_bit_mask)]
     pub fn load_image(
         &mut self,
+        name: &str,
         buf: &[u8],
         load_addr: Option<u64>,
         symbols: &mut BTreeMap<String, u64>,
-    ) -> Result<i64, &'static str> {
-        let elf_file = xmas_elf::ElfFile::new(buf)?;
-
-        xmas_elf::header::sanity_check(&elf_file)?;
+    ) -> anyhow::Result<i64> {
+        let elf_file = xmas_elf::ElfFile::new(buf);
+        if elf_file.is_err() {
+            let Some(load_addr) = load_addr else {
+                bail!("Cannot load {name} as binary object as no load address was provided");
+            };
+            let size = buf.len();
+            log::warn!(
+                "Assuming the image is a binary and loading it to [{load_addr:#x}:{:#x}]",
+                load_addr as usize + size
+            );
+            // XXX this should be a function
+            self.cpu
+                .mmu
+                .memory
+                .slice(load_addr as i64, size)
+                .map_err(|()| anyhow!("load_image reaches outside memory"))?
+                .copy_from_slice(buf);
+            return Ok(load_addr as i64);
+        }
+        let elf_file = elf_file.map_err(|e| anyhow!(e))?;
+        xmas_elf::header::sanity_check(&elf_file).map_err(|e| anyhow!(e))?;
         log::info!("ELF {:?}", elf_file.header.pt2.type_());
         let relocation_offset = match (elf_file.header.pt2.type_().as_type(), load_addr) {
             (xmas_elf::header::Type::SharedObject, Some(load_addr)) => {
@@ -218,7 +239,9 @@ impl Emulator {
             }
             let addr = sect.physical_addr() + relocation_offset;
             let size = sect.mem_size();
-            let xmas_elf::program::SegmentData::Undefined(data) = sect.get_data(&elf_file)? else {
+            let xmas_elf::program::SegmentData::Undefined(data) =
+                sect.get_data(&elf_file).map_err(|e| anyhow!(e))?
+            else {
                 // XXX error handling
                 panic!("didn't find my data");
             };
@@ -240,9 +263,11 @@ impl Emulator {
         }
 
         for sect in elf_file.section_iter().skip(1) {
-            if let SectionData::SymbolTable64(data) = sect.get_data(&elf_file)? {
+            if let SectionData::SymbolTable64(data) =
+                sect.get_data(&elf_file).map_err(|e| anyhow!(e))?
+            {
                 for datum in data {
-                    let name = datum.get_name(&elf_file)?;
+                    let name = datum.get_name(&elf_file).map_err(|e| anyhow!(e))?;
                     if !name.is_empty() && datum.info() & 15 == 0 {
                         symbols.insert(name.to_string(), datum.value());
                     }

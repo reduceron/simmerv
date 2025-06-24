@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
         TerminalType::PopupTerminal
     };
     let mut symbols = BTreeMap::new();
-    let mut emulator = Emulator::new(get_terminal(&terminal_type), 512 * 1024 * 1024);
+    let mut emulator = Emulator::new(get_terminal(&terminal_type), 2048 * 1024 * 1024);
     let mut img_contents = vec![];
     let mut load_addr = Some(0x8000_0000);
     let mut emu_start = None;
@@ -72,8 +72,8 @@ fn main() -> anyhow::Result<()> {
     for img_path in args.images {
         img_contents.clear();
         let mut parts_iter = img_path.split(',');
-
-        let mut img_file = File::open(parts_iter.next().unwrap())?;
+        let filename = parts_iter.next().unwrap();
+        let mut img_file = File::open(filename)?;
         img_file.read_to_end(&mut img_contents)?;
 
         for part in parts_iter {
@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         let entry = emulator
-            .load_image(&img_contents, load_addr, &mut symbols)
+            .load_image(filename, &img_contents, load_addr, &mut symbols)
             .map_err(|e| anyhow!(e))?;
 
         if emu_start.is_none() {
