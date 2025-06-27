@@ -39,7 +39,7 @@
         const debugMode = debuggerCheckbox.checked;
 
         const riscv = WasmRiscv.new();
-        riscv.setup_program(new Uint8Array(elfBuffer));
+        riscv.load_image(new Uint8Array(elfBuffer));
 
         if (fsBuffer.byteLength > 0) {
           riscv.setup_filesystem(new Uint8Array(fsBuffer));

@@ -16,7 +16,7 @@ Below is the example code to import and use them.
   init().then(async wasm => {
     const riscv = WasmRiscv.new();
     const programBuffer = await fetch(path_to_program).then(res => res.arrayBuffer());
-    riscv.setup_program(new Uint8Array(programBuffer));
+    riscv.load_image(new Uint8Array(programBuffer));
 
     // Emulator needs to break program regularly to handle input/output
     // because the emulator is currenlty designed to run in a single thread.

@@ -114,7 +114,7 @@ const WasmRiscvFinalization = (typeof FinalizationRegistry === 'undefined')
  * // JavaScript code
  * const riscv = WasmRiscv.new();
  * // Setup program content binary
- * riscv.setup_program(new Uint8Array(elfBuffer));
+ * riscv.load_image(new Uint8Array(elfBuffer));
  * // Setup filesystem content binary
  * riscv.setup_filesystem(new Uint8Array(fsBuffer));
  *
@@ -185,10 +185,10 @@ export class WasmRiscv {
      * * `content` Program binary
      * @param {Uint8Array} content
      */
-    setup_program(content) {
+    load_image(content) {
         const ptr0 = passArray8ToWasm0(content, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.wasmriscv_setup_program(this.__wbg_ptr, ptr0, len0);
+        wasm.wasmriscv_load_image(this.__wbg_ptr, ptr0, len0);
     }
     /**
      * Sets up filesystem. Use this method if program (e.g. Linux) uses
@@ -218,7 +218,7 @@ export class WasmRiscv {
         wasm.wasmriscv_setup_dtb(this.__wbg_ptr, ptr0, len0);
     }
     /**
-     * Runs program set by `setup_program()`. The emulator won't stop forever
+     * Runs program set by `load_image()`. The emulator won't stop forever
      * unless [`riscv-tests`](https://github.com/riscv/riscv-tests) programs.
      * The emulator stops if program is `riscv-tests` program and it finishes.
      */
@@ -226,7 +226,7 @@ export class WasmRiscv {
         wasm.wasmriscv_run(this.__wbg_ptr);
     }
     /**
-     * Runs program set by `setup_program()` in `cycles` cycles.
+     * Runs program set by `load_image()` in `cycles` cycles.
      *
      * # Arguments
      * * `cycles`

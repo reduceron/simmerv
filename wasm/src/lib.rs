@@ -13,7 +13,7 @@ const WASM_MEMORY_SIZE: usize = 512 * 1024 * 1024;
 /// // JavaScript code
 /// const riscv = WasmRiscv.new();
 /// // Setup program content binary
-/// riscv.setup_program(new Uint8Array(elfBuffer));
+/// riscv.load_image(new Uint8Array(elfBuffer));
 /// // Setup filesystem content binary
 /// riscv.setup_filesystem(new Uint8Array(fsBuffer));
 ///
@@ -66,10 +66,16 @@ impl WasmRiscv {
     ///
     /// # Arguments
     /// * `content` Program binary
-    pub fn setup_program(&mut self, content: Vec<u8>) {
-        self.emulator
-            .setup_program(&content, 0x80000000, &mut std::collections::BTreeMap::new())
+    pub fn load_image(&mut self, content: Vec<u8>) {
+        let startpc = self
+            .emulator
+            .load_image(
+                &content,
+                Some(0x80000000),
+                &mut std::collections::BTreeMap::new(),
+            )
             .unwrap();
+        self.emulator.cpu.update_pc(startpc);
     }
 
     /// Sets up filesystem. Use this method if program (e.g. Linux) uses
@@ -89,12 +95,12 @@ impl WasmRiscv {
     /// * `content` DTB content binary
     pub fn setup_dtb(&mut self, content: Vec<u8>) { self.emulator.setup_dtb(&content); }
 
-    /// Runs program set by `setup_program()`. The emulator won't stop forever
+    /// Runs program set by `load_image()`. The emulator won't stop forever
     /// unless [`riscv-tests`](https://github.com/riscv/riscv-tests) programs.
     /// The emulator stops if program is `riscv-tests` program and it finishes.
     pub fn run(&mut self) { self.emulator.run(false); }
 
-    /// Runs program set by `setup_program()` in `cycles` cycles.
+    /// Runs program set by `load_image()` in `cycles` cycles.
     ///
     /// # Arguments
     /// * `cycles`
