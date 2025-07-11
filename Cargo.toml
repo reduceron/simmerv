@@ -34,6 +34,7 @@ wasm-timer = "0.2.5"
 log = "0.4.26"
 xmas-elf = "0.10.0"
 anyhow = "1.0.98"
+zstd = "0.13.3"
 
 [dev-dependencies]
 argh = "0.1.13"

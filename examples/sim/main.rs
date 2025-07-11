@@ -14,6 +14,8 @@ use std::fs::File;
 use std::io::Read;
 
 #[derive(FromArgs)]
+#[allow(clippy::doc_markdown)]
+#[allow(clippy::struct_excessive_bools)]
 /// Simulate a RISC-V RV64GC SoC
 struct Args {
     /// file system image files
@@ -62,6 +64,7 @@ fn get_terminal(terminal_type: &TerminalType, ctrlc_breaks: bool) -> Box<dyn Ter
     }
 }
 
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -85,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     for img_path in args.images {
         img_contents.clear();
         let mut parts_iter = img_path.split(',');
-        let filename = parts_iter.next().unwrap();
+        let filename = parts_iter.next().unwrap_or("");
         let mut img_file = File::open(filename)?;
         img_file.read_to_end(&mut img_contents)?;
 
@@ -122,17 +125,22 @@ fn main() -> anyhow::Result<()> {
     }
 
     for path in args.fs {
-        let mut file = File::open(path)?;
-        let mut contents = vec![];
-        file.read_to_end(&mut contents)?;
-        emulator.setup_filesystem(contents);
+        emulator.setup_filesystem(if path.ends_with(".zst") {
+            let file = File::open(path)?;
+            zstd::stream::decode_all(file)?
+        } else {
+            let mut file = File::open(path)?;
+            let mut contents = vec![];
+            file.read_to_end(&mut contents)?;
+            contents
+        });
     }
 
     emulator.enable_page_cache(args.page_cache);
 
     if images == 0 {
         bail!("I have nothing to run");
-    };
+    }
 
     emulator.cpu.update_pc(emu_start.unwrap_or(0x8000_0000));
 
