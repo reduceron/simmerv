@@ -10,7 +10,7 @@ pub struct NonblockNoEcho {
 
 impl NonblockNoEcho {
     #[allow(clippy::expect_used, clippy::unwrap_used)]
-    pub fn new(capture_ctrlc: bool) -> Self {
+    pub fn new(ctrlc_breaks: bool) -> Self {
         use std::os::unix::io::AsRawFd;
         use termios::ECHO;
         use termios::ICANON;
@@ -18,6 +18,7 @@ impl NonblockNoEcho {
         use termios::TCSANOW;
         use termios::Termios;
         use termios::tcsetattr;
+
         let stdin: i32 = std::io::stdin().as_raw_fd();
         assert_eq!(stdin, 0);
 
@@ -30,21 +31,25 @@ impl NonblockNoEcho {
 
         let mut termios = orig_termios;
         termios.c_lflag &= !(ECHO | ICANON); // no echo and canonical mode
-        if capture_ctrlc {
+        if !ctrlc_breaks {
             termios.c_lflag &= !ISIG; // Don't break on Ctrl-C
         }
 
-        /*
-        AFAICT, I don't actually need any of all of this
+        termios.c_iflag &= !(termios::IGNBRK
+            | termios::BRKINT
+            | termios::PARMRK
+            | termios::ISTRIP
+            | termios::INLCR
+            | termios::IGNCR
+            | termios::ISIG
+            | termios::ICRNL
+            | termios::IXON);
+        termios.c_oflag |= termios::OPOST;
+        termios.c_cflag &= !(termios::CSIZE | termios::PARENB);
+        termios.c_cflag |= termios::CS8;
+        termios.c_cc[termios::VMIN] = 1;
+        termios.c_cc[termios::VTIME] = 0;
 
-        termios.c_lflag &= !(ECHO | ECHONL | ICANON | IEXTEN); // no echo and canonical mode
-        termios.c_iflag &= !(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-        termios.c_oflag |= OPOST;
-        termios.c_cflag &= !(CSIZE | PARENB);
-        termios.c_cflag |= CS8;
-        termios.c_cc[VMIN] = 1;
-        termios.c_cc[VTIME] = 0;
-         */
         tcsetattr(stdin, TCSANOW, &termios).unwrap();
 
         Self {

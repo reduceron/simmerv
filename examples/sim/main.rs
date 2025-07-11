@@ -28,6 +28,10 @@ struct Args {
     #[argh(switch, short = 'n')]
     no_terminal: bool,
 
+    /// memory size in megabytes (doesn't update the device tree)
+    #[argh(option, short = 'm')]
+    memory_size: Option<usize>,
+
     /// run with tracing
     #[argh(switch, short = 't')]
     tracing: bool,
@@ -35,6 +39,10 @@ struct Args {
     /// enable experimental page cache optimization
     #[argh(switch, short = 'p')]
     page_cache: bool,
+
+    /// allow ctrl-C to terminate app
+    #[argh(switch, short = 'c')]
+    ctrlc_breaks: bool,
 
     /// memory images, with optional comma separated options,
     /// such as '0x8200000'
@@ -47,9 +55,9 @@ enum TerminalType {
     DummyTerminal,
 }
 
-fn get_terminal(terminal_type: &TerminalType) -> Box<dyn Terminal> {
+fn get_terminal(terminal_type: &TerminalType, ctrlc_breaks: bool) -> Box<dyn Terminal> {
     match terminal_type {
-        TerminalType::PopupTerminal => Box::new(PopupTerminal::new()),
+        TerminalType::PopupTerminal => Box::new(PopupTerminal::new(ctrlc_breaks)),
         TerminalType::DummyTerminal => Box::new(DummyTerminal::new()),
     }
 }
@@ -64,10 +72,15 @@ fn main() -> anyhow::Result<()> {
         TerminalType::PopupTerminal
     };
     let mut symbols = BTreeMap::new();
-    let mut emulator = Emulator::new(get_terminal(&terminal_type), 2048 * 1024 * 1024);
+    let memory_size = args.memory_size.unwrap_or(2048);
+    let mut emulator = Emulator::new(
+        get_terminal(&terminal_type, args.ctrlc_breaks),
+        memory_size * 1024 * 1024,
+    );
     let mut img_contents = vec![];
     let mut load_addr = Some(0x8000_0000);
     let mut emu_start = None;
+    let mut images = 0;
 
     for img_path in args.images {
         img_contents.clear();
@@ -87,6 +100,8 @@ fn main() -> anyhow::Result<()> {
         let entry = emulator
             .load_image(filename, &img_contents, load_addr, &mut symbols)
             .map_err(|e| anyhow!(e))?;
+
+        images += 1;
 
         if emu_start.is_none() {
             emu_start = Some(entry);
@@ -115,7 +130,11 @@ fn main() -> anyhow::Result<()> {
 
     emulator.enable_page_cache(args.page_cache);
 
-    emulator.cpu.update_pc(emu_start.unwrap());
+    if images == 0 {
+        bail!("I have nothing to run");
+    };
+
+    emulator.cpu.update_pc(emu_start.unwrap_or(0x8000_0000));
 
     emulator.run(args.tracing);
 

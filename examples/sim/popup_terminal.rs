@@ -10,9 +10,9 @@ pub struct PopupTerminal {
 }
 
 impl PopupTerminal {
-    pub fn new() -> Self {
+    pub fn new(ctrlc_breaks: bool) -> Self {
         Self {
-            input: NonblockNoEcho::new(false), // Don't catch ctrl-C  ... for now
+            input: NonblockNoEcho::new(ctrlc_breaks),
         }
     }
 }
