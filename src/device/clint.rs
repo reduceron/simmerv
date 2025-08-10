@@ -37,13 +37,15 @@ impl Clint {
     /// # Arguments
     /// * `mip` CPU `mip` register. It can be updated if interrupt occurs.
     #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::option_if_let_else)]
     pub fn service(&mut self, cycle: u64, mip: &mut u64) {
-        let mut msystem_time = cycle / 16; // XXX An arbitrary number that seems to work ok
-
-        if let Ok(t) = self.t0.elapsed() {
-            msystem_time = t.as_micros() as u64; // 1 µs timebase
-        }
-        self.mtime_system = msystem_time;
+        self.mtime_system = match self.t0.elapsed() {
+            Ok(t) => t.as_micros() as u64,
+            _ => {
+                // XXX An arbitrary number that seems to work ok
+                cycle / 16
+            }
+        };
 
         if (self.msip & 1) != 0 {
             *mip |= MIP_MSIP;
