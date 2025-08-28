@@ -19,13 +19,23 @@ impl PopupTerminal {
 
 impl Terminal for PopupTerminal {
     fn put_byte(&mut self, value: u8) {
-        print!("{}", value as char);
+        let stdout: Stdout = io::stdout();
+        loop {
+            if stdout.lock().flush().is_ok() {
+                break;
+            }
+        }
+        print!("{}", value as char)
     }
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
     fn get_input(&mut self) -> u8 {
         let stdout: Stdout = io::stdout();
-        stdout.lock().flush().unwrap();
+        loop {
+            if stdout.lock().flush().is_ok() {
+                break;
+            }
+        }
         self.input.get_key().unwrap_or_default()
     }
 

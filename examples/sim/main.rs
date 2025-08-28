@@ -30,9 +30,9 @@ struct Args {
     #[argh(switch, short = 'n')]
     no_terminal: bool,
 
-    /// memory size in megabytes (doesn't update the device tree)
+    /// memory size in megabytes (doesn't yet update the device tree)
     #[argh(option, short = 'm')]
-    memory_size: Option<usize>,
+    memory_megs: Option<usize>,
 
     /// run with tracing
     #[argh(switch, short = 't')]
@@ -75,10 +75,10 @@ fn main() -> anyhow::Result<()> {
         TerminalType::PopupTerminal
     };
     let mut symbols = BTreeMap::new();
-    let memory_size = args.memory_size.unwrap_or(2048);
+    let memory_megs = args.memory_megs.unwrap_or(2048);
     let mut emulator = Emulator::new(
         get_terminal(&terminal_type, args.ctrlc_breaks),
-        memory_size * 1024 * 1024,
+        memory_megs * 1024 * 1024,
     );
     let mut img_contents = vec![];
     let mut load_addr = Some(0x8000_0000);
