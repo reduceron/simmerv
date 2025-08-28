@@ -803,6 +803,10 @@ impl Cpu {
         v: i64,
         size: i64,
     ) -> Result<i64, Exception> {
+        if access == MemoryAccessType::Write {
+            self.reservation = None;
+        }
+
         self.memop_general(access, baseva, offset, v, size, false)
     }
 
@@ -2630,6 +2634,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let s2 = cpu.read_x(f.rs2) as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             cpu.mmu.store_virt_u64(s1, s2)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp);
             Ok(())
         },
@@ -2645,6 +2650,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let s2 = cpu.read_x(f.rs2) as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp.wrapping_add(s2))?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2660,6 +2666,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let s2 = cpu.read_x(f.rs2) as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp ^ s2)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2675,6 +2682,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let s2 = cpu.read_x(f.rs2) as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp & s2)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2690,6 +2698,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let s2 = cpu.read_x(f.rs2) as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp | s2)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2706,6 +2715,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             let min = if s2 < tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, min as u64)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp);
             Ok(())
         },
@@ -2722,6 +2732,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, max as u64)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp);
             Ok(())
         },
@@ -2738,6 +2749,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             let min = if s2 <= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, min)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2754,6 +2766,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, max)?;
+            cpu.reservation = None;
             cpu.write_x(f.rd, tmp as i64);
             Ok(())
         },
@@ -2783,6 +2796,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_s_xf(word);
             let s1 = cpu.read_x(f.rs1);
             let s2 = cpu.read_f(f.rs2);
+            cpu.reservation = None;
             cpu.mmu.store_virt_u32_(s1.wrapping_add(f.imm), s2)
         },
         disassemble: dump_format_s,
