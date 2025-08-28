@@ -534,7 +534,7 @@ impl VirtioBlockDisk {
             }
         }
 
-        assert!((desc_num == 3), "Descript chain length should be three.");
+        assert!(desc_num == 3, "Descript chain length should be three.");
 
         memory
             .write_u32(
