@@ -1,7 +1,7 @@
 use num_derive::FromPrimitive;
 use std::convert::TryFrom;
 
-#[derive(Clone, Copy, Debug, FromPrimitive)]
+#[derive(Clone, Copy, Debug, FromPrimitive, PartialEq, Eq)]
 pub enum Trap {
     InstructionAddressMisaligned = 0,
     InstructionAccessFault,

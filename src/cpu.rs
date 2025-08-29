@@ -103,7 +103,7 @@ pub struct Cpu {
     decode_dag: Vec<u16>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Exception {
     pub trap: Trap,
     pub tval: i64,
