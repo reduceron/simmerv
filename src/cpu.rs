@@ -893,12 +893,12 @@ impl Cpu {
                 match access {
                     Write => {
                         if self.mmu.store_mmio_u8(pa as i64, v as u8).is_err() {
-                            return Err(Exception { trap, tval: va + 1 });
+                            return Err(Exception { trap, tval: va + i });
                         }
                     }
                     Read | Execute => {
                         let Ok(w) = self.mmu.load_mmio_u8(pa) else {
-                            return Err(Exception { trap, tval: va + 1 });
+                            return Err(Exception { trap, tval: va + i });
                         };
                         b = w;
                     }
