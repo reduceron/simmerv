@@ -8195,6 +8195,7 @@ pub static RVC64_EXPANDED: [u32; 65536] = [
 
 #[cfg(test)]
 #[allow(clippy::too_many_lines, clippy::unused_self)]
+#[must_use]
 pub fn uncompress(insn16: u32) -> u32 {
     let funct3 = (insn16 >> 13) & 7; // [15:13]
 

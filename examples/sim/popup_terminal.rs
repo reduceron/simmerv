@@ -25,7 +25,7 @@ impl Terminal for PopupTerminal {
                 break;
             }
         }
-        print!("{}", value as char)
+        print!("{}", value as char);
     }
 
     #[allow(clippy::expect_used, clippy::unwrap_used)]
