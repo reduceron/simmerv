@@ -223,13 +223,10 @@ impl Emulator {
         let elf_file = elf_file.map_err(|e| anyhow!(e))?;
         xmas_elf::header::sanity_check(&elf_file).map_err(|e| anyhow!(e))?;
         log::info!("ELF {:?}", elf_file.header.pt2.type_());
-        let relocation_offset = match (elf_file.header.pt2.type_().as_type(), load_addr) {
-            (xmas_elf::header::Type::SharedObject, Some(load_addr)) => {
-                log::info!("Relocating it to {load_addr:#x}");
-                load_addr
-            }
-            _ => 0,
-        };
+        let relocation_offset = load_addr.map_or(0, |load_addr| {
+            log::info!("Relocating it to {load_addr:#x}");
+            load_addr
+        });
         let ph_iter = elf_file.program_iter();
         log::info!("ELF program headers");
         for sect in ph_iter {
