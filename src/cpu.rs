@@ -678,17 +678,17 @@ impl Cpu {
     pub fn disassemble_insn(&self, s: &mut String, addr: i64, mut word32: u32, eval: bool) -> Reg {
         let (insn, _) = decompress(addr, word32);
         let Ok(decoded) = decode(&self.decode_dag, insn) else {
-            let _ = write!(s, "{addr:016x} {word32:08x} Illegal instruction");
+            let _ = write!(s, "{addr:16x} {word32:8x} Illegal instruction");
             return xd(0);
         };
 
         let asm = decoded.name.to_lowercase();
 
         if word32 % 4 == 3 {
-            let _ = write!(s, "{addr:016x} {word32:08x} {asm:7} ");
+            let _ = write!(s, "{addr:16x} {word32:8x} {asm:7} ");
         } else {
             word32 &= 0xffff;
-            let _ = write!(s, "{addr:016x} {word32:04x}     {asm:7} ");
+            let _ = write!(s, "{addr:16x}     {word32:4x} {asm:7} ");
         }
         (decoded.disassemble)(s, self, addr, insn, eval)
     }
