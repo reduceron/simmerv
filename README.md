@@ -71,6 +71,11 @@ many FP instructions) are not 100% to the spec.
 $ cargo r --example sim -r -- linux/fw_payload.elf -f linux/rootfs.img
 ```
 
+or
+```sh
+$ cargo r --example sim -r -- -c linux/opensbi/fw_jump.elf,0x80000000 linux/vmlinux,0x80200000 -f linux/rootfs.img
+```
+
 ## How to run riscv-tests
 
 ```sh

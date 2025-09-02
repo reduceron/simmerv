@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
         memory_megs * 1024 * 1024,
     );
     let mut img_contents = vec![];
-    let mut load_addr = Some(0x8000_0000);
+    let mut load_addr = None;
     let mut emu_start = None;
     let mut images = 0;
 
