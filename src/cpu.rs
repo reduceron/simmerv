@@ -206,10 +206,11 @@ impl Cpu {
     /// Runs program N cycles. Fetch, decode, and execution are completed in a
     /// cycle so far.
     #[allow(clippy::cast_sign_loss)]
-    pub fn run_soc(&mut self, cpu_steps: usize) {
+    pub fn run_soc(&mut self, cpu_steps: usize) -> bool {
         for _ in 0..cpu_steps {
             if let Err(exc) = self.step_cpu() {
                 self.handle_exception(&exc);
+                return true;
             }
 
             if self.wfi {
@@ -218,6 +219,8 @@ impl Cpu {
         }
         self.mmu.service(self.cycle);
         self.handle_interrupt();
+
+        false
     }
 
     // It's here, the One Key Function.  This is where it all happens!
@@ -323,16 +326,17 @@ impl Cpu {
         } else {
             PrivMode::U
         };
-        let new_priv_encoding = u64::from(new_priv_mode);
-        let current_status = match self.mmu.prv {
-            PrivMode::M => self.read_csr_raw(Csr::Mstatus),
-            PrivMode::S => self.read_csr_raw(Csr::Sstatus),
-            PrivMode::U => self.read_csr_raw(Csr::Ustatus),
-        };
-
-        // Second, ignore the interrupt if it's disabled by some conditions
 
         if is_interrupt {
+            let new_priv_encoding = u64::from(new_priv_mode);
+            // Second, ignore the interrupt if it's disabled by some conditions
+
+            let current_status = match self.mmu.prv {
+                PrivMode::M => self.read_csr_raw(Csr::Mstatus),
+                PrivMode::S => self.read_csr_raw(Csr::Sstatus),
+                PrivMode::U => self.read_csr_raw(Csr::Ustatus),
+            };
+
             let ie = match new_priv_mode {
                 PrivMode::M => self.read_csr_raw(Csr::Mie),
                 PrivMode::S => self.read_csr_raw(Csr::Sie),
@@ -1045,7 +1049,7 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
         let _ = write!(s, "{csr_s}");
     }
 
-    let _ = write!(s, ", {}", get_register_name(f.rs));
+    let _ = write!(s, ", {}", f.rs.get());
     f.rd
 }
 
@@ -3666,6 +3670,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, _word| {
             cpu.pc = cpu.read_csr(Csr::Mepc as u16)? as i64;
             let status = cpu.read_csr_raw(Csr::Mstatus);
+
             let mpie = (status >> 7) & 1;
             let mpp = (status >> 11) & 3;
             let mprv = match priv_mode_from(mpp) {

@@ -101,10 +101,10 @@ impl Emulator {
         loop {
             s.clear();
             let wbr = self.cpu.disassemble(&mut s);
-            self.tick(1);
+            let exceptional = self.tick(1);
             let cycle = self.cpu.cycle;
-            print!("{cycle:5} {s:72}");
-            if wbr.is_x0_dest() {
+            print!("{cycle:5} {:1} {s:72}", u64::from(self.cpu.mmu.prv));
+            if wbr.is_x0_dest() || exceptional {
                 println!();
             } else {
                 println!("{:16x}", self.cpu.read_register(wbr));
@@ -175,10 +175,10 @@ impl Emulator {
     }
 
     /// Runs CPU one cycle
-    pub fn tick(&mut self, n: usize) {
+    pub fn tick(&mut self, n: usize) -> bool {
         // XXX We should be able to set this arbitrarily high, but we seem
         // to hit a race condition and a Linux hang beyond this value
-        self.cpu.run_soc(n);
+        self.cpu.run_soc(n)
     }
 
     /// Sets up program run by the program. This method analyzes the passed
