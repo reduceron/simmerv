@@ -14,7 +14,9 @@ exclude = [
 ]
 
 [workspace]
-members = [".", "wasm"]
+resolver = "3"
+members = [".", "sim", "wasm"]
+default-members = ["sim"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -2 }
@@ -35,16 +37,6 @@ log = "0.4.26"
 xmas-elf = "0.10.0"
 anyhow = "1.0.98"
 zstd = "0.13.3"
-
-[dev-dependencies]
-argh = "0.1.13"
-libc = "0.2.155"
-termios = "0.3.3"
-env_logger = "0.11.7"
-anyhow = "1.0.98"
-
-[[example]]
-name = "sim"
 
 [dev-dependencies.cargo-husky]
 version = "1"

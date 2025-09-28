@@ -14,13 +14,25 @@ function getArrayU8FromWasm0(ptr, len) {
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
-const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
+let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
 
-if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
+cachedTextDecoder.decode();
+
+const MAX_SAFARI_DECODE_BYTES = 2146435072;
+let numBytesDecoded = 0;
+function decodeText(ptr, len) {
+    numBytesDecoded += len;
+    if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
+        cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
+        cachedTextDecoder.decode();
+        numBytesDecoded = len;
+    }
+    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+}
 
 function getStringFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
-    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+    return decodeText(ptr, len);
 }
 
 let WASM_VECTOR_LEN = 0;
@@ -32,36 +44,18 @@ function passArray8ToWasm0(arg, malloc) {
     return ptr;
 }
 
-let cachedBigUint64ArrayMemory0 = null;
+const cachedTextEncoder = new TextEncoder();
 
-function getBigUint64ArrayMemory0() {
-    if (cachedBigUint64ArrayMemory0 === null || cachedBigUint64ArrayMemory0.byteLength === 0) {
-        cachedBigUint64ArrayMemory0 = new BigUint64Array(wasm.memory.buffer);
+if (!('encodeInto' in cachedTextEncoder)) {
+    cachedTextEncoder.encodeInto = function (arg, view) {
+        const buf = cachedTextEncoder.encode(arg);
+        view.set(buf);
+        return {
+            read: arg.length,
+            written: buf.length
+        };
     }
-    return cachedBigUint64ArrayMemory0;
 }
-
-function passArray64ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 8, 8) >>> 0;
-    getBigUint64ArrayMemory0().set(arg, ptr / 8);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-
-const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
-
-const encodeString = (typeof cachedTextEncoder.encodeInto === 'function'
-    ? function (arg, view) {
-    return cachedTextEncoder.encodeInto(arg, view);
-}
-    : function (arg, view) {
-    const buf = cachedTextEncoder.encode(arg);
-    view.set(buf);
-    return {
-        read: arg.length,
-        written: buf.length
-    };
-});
 
 function passStringToWasm0(arg, malloc, realloc) {
 
@@ -92,13 +86,29 @@ function passStringToWasm0(arg, malloc, realloc) {
         }
         ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
         const view = getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
-        const ret = encodeString(arg, view);
+        const ret = cachedTextEncoder.encodeInto(arg, view);
 
         offset += ret.written;
         ptr = realloc(ptr, len, offset, 1) >>> 0;
     }
 
     WASM_VECTOR_LEN = offset;
+    return ptr;
+}
+
+let cachedBigUint64ArrayMemory0 = null;
+
+function getBigUint64ArrayMemory0() {
+    if (cachedBigUint64ArrayMemory0 === null || cachedBigUint64ArrayMemory0.byteLength === 0) {
+        cachedBigUint64ArrayMemory0 = new BigUint64Array(wasm.memory.buffer);
+    }
+    return cachedBigUint64ArrayMemory0;
+}
+
+function passArray64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getBigUint64ArrayMemory0().set(arg, ptr / 8);
+    WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
 
@@ -170,12 +180,27 @@ export class WasmRiscv {
         wasm.__wbg_wasmriscv_free(ptr, 0);
     }
     /**
-     * Creates a new `WasmRiscv`.
-     * @returns {WasmRiscv}
+     * Gets ascii code byte sent from the emulator to terminal.
+     * The emulator holds output buffer inside. This method returns zero
+     * if the output buffer is empty. So if you want to read all buffered
+     * output content, repeatedly call this method until zero is returned.
+     *
+     * ```ignore
+     * // JavaScript code
+     * while (true) {
+     *   const data = riscv.get_output();
+     *   if (data !== 0) {
+     *     // print data
+     *   } else {
+     *     break;
+     *   }
+     * }
+     * ```
+     * @returns {number}
      */
-    static new() {
-        const ret = wasm.wasmriscv_new();
-        return WasmRiscv.__wrap(ret);
+    get_output() {
+        const ret = wasm.wasmriscv_get_output(this.__wbg_ptr);
+        return ret;
     }
     /**
      * Sets up program run by the program. This method is expected to be called
@@ -191,6 +216,35 @@ export class WasmRiscv {
         wasm.wasmriscv_load_image(this.__wbg_ptr, ptr0, len0);
     }
     /**
+     * Runs program set by `load_image()` in `cycles` cycles.
+     *
+     * # Arguments
+     * * `cycles`
+     * @param {number} cycles
+     */
+    run_cycles(cycles) {
+        wasm.wasmriscv_run_cycles(this.__wbg_ptr, cycles);
+    }
+    /**
+     * Disassembles an instruction Program Counter points to.
+     * Use `get_output()` to get the disassembled strings.
+     */
+    disassemble() {
+        wasm.wasmriscv_disassemble(this.__wbg_ptr);
+    }
+    /**
+     * Reads integer register content.
+     *
+     * # Arguments
+     * * `reg` register number. Must be 0-31.
+     * @param {number} _reg
+     * @returns {bigint}
+     */
+    read_register(_reg) {
+        const ret = wasm.wasmriscv_read_register(this.__wbg_ptr, _reg);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
      * Sets up filesystem. Use this method if program (e.g. Linux) uses
      * filesystem. This method is expected to be called up to only once.
      *
@@ -204,36 +258,35 @@ export class WasmRiscv {
         wasm.wasmriscv_setup_filesystem(this.__wbg_ptr, ptr0, len0);
     }
     /**
-     * Sets up device tree. The emulator has default device tree configuration.
-     * If you want to override it, use this method. This method is expected to
-     * to be called up to only once.
+     * Enables or disables page cache optimization.
+     * Page cache optimization is an experimental feature.
+     * Refer to [`Mmu`](../simmerv/mmu/struct.Mmu.html) for the detail.
      *
      * # Arguments
-     * * `content` DTB content binary
-     * @param {Uint8Array} content
+     * * `enabled`
+     * @param {boolean} enabled
      */
-    setup_dtb(content) {
-        const ptr0 = passArray8ToWasm0(content, wasm.__wbindgen_malloc);
+    enable_page_cache(enabled) {
+        wasm.wasmriscv_enable_page_cache(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Gets virtual address corresponding to symbol strings.
+     *
+     * # Arguments
+     * * `s` Symbol strings
+     * * `error` If symbol is not found error[0] holds non-zero. Otherwize
+     *   zero.
+     * @param {string} s
+     * @param {Uint8Array} error
+     * @returns {bigint}
+     */
+    get_address_of_symbol(s, error) {
+        const ptr0 = passStringToWasm0(s, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.wasmriscv_setup_dtb(this.__wbg_ptr, ptr0, len0);
-    }
-    /**
-     * Runs program set by `load_image()`. The emulator won't stop forever
-     * unless [`riscv-tests`](https://github.com/riscv/riscv-tests) programs.
-     * The emulator stops if program is `riscv-tests` program and it finishes.
-     */
-    run() {
-        wasm.wasmriscv_run(this.__wbg_ptr);
-    }
-    /**
-     * Runs program set by `load_image()` in `cycles` cycles.
-     *
-     * # Arguments
-     * * `cycles`
-     * @param {number} cycles
-     */
-    run_cycles(cycles) {
-        wasm.wasmriscv_run_cycles(this.__wbg_ptr, cycles);
+        var ptr1 = passArray8ToWasm0(error, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmriscv_get_address_of_symbol(this.__wbg_ptr, ptr0, len0, ptr1, len1, error);
+        return BigInt.asUintN(64, ret);
     }
     /**
      * Runs program until breakpoints. Also known as debugger's continue
@@ -272,23 +325,20 @@ export class WasmRiscv {
         return ret !== 0;
     }
     /**
-     * Disassembles an instruction Program Counter points to.
-     * Use `get_output()` to get the disassembled strings.
+     * Creates a new `WasmRiscv`.
+     * @returns {WasmRiscv}
      */
-    disassemble() {
-        wasm.wasmriscv_disassemble(this.__wbg_ptr);
+    static new() {
+        const ret = wasm.wasmriscv_new();
+        return WasmRiscv.__wrap(ret);
     }
     /**
-     * Reads integer register content.
-     *
-     * # Arguments
-     * * `reg` register number. Must be 0-31.
-     * @param {number} _reg
-     * @returns {bigint}
+     * Runs program set by `load_image()`. The emulator won't stop forever
+     * unless [`riscv-tests`](https://github.com/riscv/riscv-tests) programs.
+     * The emulator stops if program is `riscv-tests` program and it finishes.
      */
-    read_register(_reg) {
-        const ret = wasm.wasmriscv_read_register(this.__wbg_ptr, _reg);
-        return BigInt.asUintN(64, ret);
+    run() {
+        wasm.wasmriscv_run(this.__wbg_ptr);
     }
     /**
      * Reads Program Counter content.
@@ -296,29 +346,6 @@ export class WasmRiscv {
      */
     read_pc() {
         const ret = wasm.wasmriscv_read_pc(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * Gets ascii code byte sent from the emulator to terminal.
-     * The emulator holds output buffer inside. This method returns zero
-     * if the output buffer is empty. So if you want to read all buffered
-     * output content, repeatedly call this method until zero is returned.
-     *
-     * ```ignore
-     * // JavaScript code
-     * while (true) {
-     *   const data = riscv.get_output();
-     *   if (data !== 0) {
-     *     // print data
-     *   } else {
-     *     break;
-     *   }
-     * }
-     * ```
-     * @returns {number}
-     */
-    get_output() {
-        const ret = wasm.wasmriscv_get_output(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -332,37 +359,23 @@ export class WasmRiscv {
         wasm.wasmriscv_put_input(this.__wbg_ptr, data);
     }
     /**
-     * Enables or disables page cache optimization.
-     * Page cache optimization is an experimental feature.
-     * Refer to [`Mmu`](../simmerv/mmu/struct.Mmu.html) for the detail.
+     * Sets up device tree. The emulator has default device tree configuration.
+     * If you want to override it, use this method. This method is expected to
+     * to be called up to only once.
      *
      * # Arguments
-     * * `enabled`
-     * @param {boolean} enabled
+     * * `content` DTB content binary
+     * @param {Uint8Array} content
      */
-    enable_page_cache(enabled) {
-        wasm.wasmriscv_enable_page_cache(this.__wbg_ptr, enabled);
-    }
-    /**
-     * Gets virtual address corresponding to symbol strings.
-     *
-     * # Arguments
-     * * `s` Symbol strings
-     * * `error` If symbol is not found error[0] holds non-zero. Otherwize
-     *   zero.
-     * @param {string} s
-     * @param {Uint8Array} error
-     * @returns {bigint}
-     */
-    get_address_of_symbol(s, error) {
-        const ptr0 = passStringToWasm0(s, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    setup_dtb(content) {
+        const ptr0 = passArray8ToWasm0(content, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        var ptr1 = passArray8ToWasm0(error, wasm.__wbindgen_malloc);
-        var len1 = WASM_VECTOR_LEN;
-        const ret = wasm.wasmriscv_get_address_of_symbol(this.__wbg_ptr, ptr0, len0, ptr1, len1, error);
-        return BigInt.asUintN(64, ret);
+        wasm.wasmriscv_setup_dtb(this.__wbg_ptr, ptr0, len0);
     }
 }
+if (Symbol.dispose) WasmRiscv.prototype[Symbol.dispose] = WasmRiscv.prototype.free;
+
+const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
 
 async function __wbg_load(module, imports) {
     if (typeof Response === 'function' && module instanceof Response) {
@@ -371,7 +384,9 @@ async function __wbg_load(module, imports) {
                 return await WebAssembly.instantiateStreaming(module, imports);
 
             } catch (e) {
-                if (module.headers.get('Content-Type') != 'application/wasm') {
+                const validResponse = module.ok && EXPECTED_RESPONSE_TYPES.has(module.type);
+
+                if (validResponse && module.headers.get('Content-Type') !== 'application/wasm') {
                     console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);
 
                 } else {
@@ -398,12 +413,15 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
     const imports = {};
     imports.wbg = {};
-    imports.wbg.__wbg_now_807e54c39636c349 = function() {
+    imports.wbg.__wbg_now_1e80617bcee43265 = function() {
         const ret = Date.now();
         return ret;
     };
-    imports.wbg.__wbindgen_copy_to_typed_array = function(arg0, arg1, arg2) {
+    imports.wbg.__wbg_wbindgencopytotypedarray_d105febdb9374ca3 = function(arg0, arg1, arg2) {
         new Uint8Array(arg2.buffer, arg2.byteOffset, arg2.byteLength).set(getArrayU8FromWasm0(arg0, arg1));
+    };
+    imports.wbg.__wbg_wbindgenthrow_451ec1a8469d7eb6 = function(arg0, arg1) {
+        throw new Error(getStringFromWasm0(arg0, arg1));
     };
     imports.wbg.__wbindgen_init_externref_table = function() {
         const table = wasm.__wbindgen_export_0;
@@ -414,9 +432,6 @@ function __wbg_get_imports() {
         table.set(offset + 2, true);
         table.set(offset + 3, false);
         ;
-    };
-    imports.wbg.__wbindgen_throw = function(arg0, arg1) {
-        throw new Error(getStringFromWasm0(arg0, arg1));
     };
 
     return imports;
