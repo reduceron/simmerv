@@ -1874,11 +1874,8 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x00100073,
         name: "EBREAK",
         operation: |_cpu, _address, word| {
-            log::info!(
-                "** Handling ebreak requires handling debug mode; reporting it as an illegal instruction **"
-            );
             Err(Exception {
-                trap: Trap::IllegalInstruction,
+                trap: Trap::Breakpoint,
                 tval: word as i64,
             })
         },
