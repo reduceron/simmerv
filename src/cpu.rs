@@ -689,10 +689,10 @@ impl Cpu {
         let asm = decoded.name.to_lowercase();
 
         if word32 % 4 == 3 {
-            let _ = write!(s, "{addr:16x} {word32:8x} {asm:7} ");
+            let _ = write!(s, "{addr:16x} {word32:08x} {asm:7} ");
         } else {
             word32 &= 0xffff;
-            let _ = write!(s, "{addr:16x}     {word32:4x} {asm:7} ");
+            let _ = write!(s, "{addr:16x}     {word32:04x} {asm:7} ");
         }
         (decoded.disassemble)(s, self, addr, insn, eval)
     }
