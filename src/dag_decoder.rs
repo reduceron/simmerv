@@ -17,7 +17,7 @@
 #[derive(Debug)]
 enum DecoderTree {
     L(usize, usize, Vec<usize>),
-    N(usize, usize, Vec<DecoderTree>),
+    N(usize, usize, Vec<Self>),
 }
 
 impl DecoderTree {
