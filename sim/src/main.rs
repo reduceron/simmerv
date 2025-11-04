@@ -4,6 +4,7 @@ mod popup_terminal;
 
 use crate::dummy_terminal::DummyTerminal;
 use crate::popup_terminal::PopupTerminal;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
 use argh::FromArgs;
@@ -89,8 +90,10 @@ fn main() -> anyhow::Result<()> {
         img_contents.clear();
         let mut parts_iter = img_path.split(',');
         let filename = parts_iter.next().unwrap_or("");
-        let mut img_file = File::open(filename)?;
-        img_file.read_to_end(&mut img_contents)?;
+        let mut img_file = File::open(filename).with_context(|| filename.to_string())?;
+        img_file
+            .read_to_end(&mut img_contents)
+            .with_context(|| filename.to_string())?;
 
         for part in parts_iter {
             if &part[..2] == "0x" {
@@ -102,6 +105,7 @@ fn main() -> anyhow::Result<()> {
 
         let entry = emulator
             .load_image(filename, &img_contents, load_addr, &mut symbols)
+            .with_context(|| filename.to_string())
             .map_err(|e| anyhow!(e))?;
 
         images += 1;
@@ -118,7 +122,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = args.dtb {
-        let mut file = File::open(path)?;
+        let mut file = File::open(&path).with_context(|| path.to_string())?;
         let mut contents = vec![];
         file.read_to_end(&mut contents)?;
         emulator.setup_dtb(&contents);
@@ -126,10 +130,10 @@ fn main() -> anyhow::Result<()> {
 
     for path in args.fs {
         emulator.setup_filesystem(if path.ends_with(".zst") {
-            let file = File::open(path)?;
+            let file = File::open(&path).with_context(|| path.to_string())?;
             zstd::stream::decode_all(file)?
         } else {
-            let mut file = File::open(path)?;
+            let mut file = File::open(&path).with_context(|| path.to_string())?;
             let mut contents = vec![];
             file.read_to_end(&mut contents)?;
             contents
