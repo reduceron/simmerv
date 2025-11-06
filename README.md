@@ -67,6 +67,10 @@ many FP instructions) are not 100% to the spec.
 
 ## How to run Linux
 
+*VERY IMPORTANT: images are stored with git LFS*. Install LFS (don't
+forget `git lfs install` also) and recheckout if needed.  Otherwise
+the images will be small files with LFS pointers.
+
 ```sh
 $ cargo r -r -- linux/fw_payload.elf -f linux/rootfs.img
 ```
