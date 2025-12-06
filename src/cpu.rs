@@ -46,11 +46,11 @@ const NODESTREG: Reg = Reg::new(64);
 
 /// Holds information about registers used by an instruction.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RegisterInfo {
-    /// Registers that are read by the instruction.
-    pub reads: [Reg; 3],
-    /// Registers that are written to by the instruction.
-    pub writes: [Reg; 1],
+pub struct RegisterInfo<R> {
+    pub rd: R,
+    pub rs1: R,
+    pub rs2: R,
+    pub rs3: R,
 }
 
 /// Generate a source integer `Reg`
@@ -266,12 +266,13 @@ impl Cpu {
 
         self.pc = npc;
         let reg_info = (decoded.get_registers)(insn);
-        let mut reads = [0i64; 3];
-        for (i, r) in reg_info.reads.iter().enumerate() {
-            reads[i] = self.read_x(*r);
-        }
-
-        (decoded.operation)(self, self.insn_addr, insn, reads)
+        let values = RegisterInfo {
+            rd: 0,
+            rs1: self.read_x(reg_info.rs1),
+            rs2: self.read_x(reg_info.rs2),
+            rs3: self.read_x(reg_info.rs3),
+        };
+        (decoded.operation)(self, self.insn_addr, insn, values)
         //let result = (decoded.operation)(self, self.insn_addr, insn, reads)?;
         //if let Some((dest_reg, value)) = result {
         //    self.write_x(dest_reg, value);
@@ -956,10 +957,14 @@ struct Instruction {
     mask: u32,
     bits: u32,
     name: &'static str,
-    operation:
-        fn(cpu: &mut Cpu, address: i64, word: u32, values: [i64; 3]) -> Result<(), Exception>, /* XXX #[must_use] */
+    operation: fn(
+        cpu: &mut Cpu,
+        address: i64,
+        word: u32,
+        values: RegisterInfo<i64>,
+    ) -> Result<(), Exception>, /* XXX #[must_use] */
     disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
-    get_registers: fn(word: u32) -> RegisterInfo,
+    get_registers: fn(word: u32) -> RegisterInfo<Reg>,
 }
 
 #[inline]
@@ -1005,18 +1010,21 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     xd(0)
 }
 
-const fn get_registers_empty(_word: u32) -> RegisterInfo {
+const fn get_registers_empty(_word: u32) -> RegisterInfo<Reg> {
     RegisterInfo {
-        reads: [ZEROREG, ZEROREG, ZEROREG],
-        writes: [NODESTREG],
+        rd: NODESTREG,
+        rs1: ZEROREG,
+        rs2: ZEROREG,
+        rs3: ZEROREG,
     }
 }
 
-fn get_registers_b(word: u32) -> RegisterInfo {
+fn get_registers_b(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_b(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [NODESTREG],
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1097,19 +1105,20 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
-fn get_registers_csr(word: u32) -> RegisterInfo {
+fn get_registers_csr(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_csr(word);
     RegisterInfo {
-        reads: [f.rs, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_csri(word: u32) -> RegisterInfo {
+fn get_registers_csri(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_csr(word); // uimm is not a register read
     RegisterInfo {
-        reads: [ZEROREG, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1175,19 +1184,21 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
-fn get_registers_i(word: u32) -> RegisterInfo {
+fn get_registers_i(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_i(word);
     RegisterInfo {
-        reads: [f.rs1, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_i_fx(word: u32) -> RegisterInfo {
+fn get_registers_i_fx(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_i_fx(word);
     RegisterInfo {
-        reads: [f.rs1, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1215,12 +1226,12 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     f.rd
 }
 
-fn get_registers_j(word: u32) -> RegisterInfo {
+fn get_registers_j(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
     RegisterInfo {
-        reads: [ZEROREG, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1301,43 +1312,51 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
-fn get_registers_r(word: u32) -> RegisterInfo {
+fn get_registers_r(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_r_xf(word: u32) -> RegisterInfo {
+fn get_registers_r_xf(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r_xf(word);
     RegisterInfo {
-        reads: [f.rs1, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_r_xff(word: u32) -> RegisterInfo {
+fn get_registers_r_xff(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r_xff(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_r_fx(word: u32) -> RegisterInfo {
+fn get_registers_r_fx(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r_fx(word);
     RegisterInfo {
-        reads: [f.rs1, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_r_fff(word: u32) -> RegisterInfo {
+fn get_registers_r_fff(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r_fff(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1354,11 +1373,12 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     f.rd
 }
 
-fn get_registers_ri(word: u32) -> RegisterInfo {
+fn get_registers_ri(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r(word);
     RegisterInfo {
-        reads: [f.rs1, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1413,11 +1433,13 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     f.rd
 }
 
-fn get_registers_r2_ffff(word: u32) -> RegisterInfo {
+fn get_registers_r2_ffff(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_r2_ffff(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, f.rs3],
-        writes: [f.rd],
+        rd: f.rd,
+        rs1: f.rs1,
+        rs2: f.rs2,
+        rs3: f.rs3,
     }
 }
 
@@ -1477,19 +1499,21 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
-fn get_registers_s(word: u32) -> RegisterInfo {
+fn get_registers_s(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_s(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [NODESTREG],
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
-fn get_registers_s_xf(word: u32) -> RegisterInfo {
+fn get_registers_s_xf(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_s_xf(word);
     RegisterInfo {
-        reads: [f.rs1, f.rs2, ZEROREG],
-        writes: [NODESTREG],
+        rs1: f.rs1,
+        rs2: f.rs2,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1519,11 +1543,11 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
-fn get_registers_u(word: u32) -> RegisterInfo {
+fn get_registers_u(word: u32) -> RegisterInfo<Reg> {
     let f = parse_format_u(word);
     RegisterInfo {
-        reads: [ZEROREG, ZEROREG, ZEROREG],
-        writes: [f.rd],
+        rd: f.rd,
+        ..get_registers_empty(0)
     }
 }
 
@@ -1546,7 +1570,7 @@ impl Cpu {
     ///
     /// Returns `Err(())` if the instruction word is illegal or cannot be
     /// decoded.
-    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<RegisterInfo> {
+    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<RegisterInfo<Reg>> {
         let (insn, _) = decompress(0, insn);
         let Ok(decoded) = decode(&self.decode_dag, insn) else {
             bail!("Illegal instruction");
@@ -1608,10 +1632,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00000067,
         name: "JALR",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
             let tmp = cpu.pc;
-            cpu.pc = cpu.read_x(f.rs1).wrapping_add(f.imm) & !1;
+            cpu.pc = values.rs1.wrapping_add(f.imm) & !1;
             cpu.write_x(f.rd, tmp);
             Ok(())
         },
