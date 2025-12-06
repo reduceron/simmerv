@@ -11,23 +11,23 @@ use crate::rvc;
 use crate::terminal;
 use anyhow::bail;
 pub use csr::*;
-use fp::RoundingMode;
-use fp::Sf;
-use fp::Sf32;
-use fp::Sf64;
 use fp::cvt_i32_sf32;
 use fp::cvt_i64_sf32;
 use fp::cvt_u32_sf32;
 use fp::cvt_u64_sf32;
+use fp::RoundingMode;
+use fp::Sf;
+use fp::Sf32;
+use fp::Sf64;
 use log;
 use num_traits::FromPrimitive;
+use riscv::priv_mode_from;
 use riscv::MemoryAccessType;
 use riscv::MemoryAccessType::Execute;
 use riscv::MemoryAccessType::Read;
 use riscv::MemoryAccessType::Write;
 use riscv::PrivMode;
 use riscv::Trap;
-use riscv::priv_mode_from;
 use std::fmt::Write as _;
 use terminal::Terminal;
 
@@ -131,6 +131,13 @@ const fn get_trap_cause(exc: &Exception) -> u64 {
     }
 }
 
+fn value_from_f32(f: f32) -> i64 { fp::NAN_BOX_F32 | i64::from(f.to_bits()) }
+const fn value_from_f64(f: f64) -> i64 { f.to_bits() as i64 }
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn value_to_f32(v: i64) -> f32 { f32::from_bits(Sf32::unbox(v) as u32) }
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn value_to_f64(v: i64) -> f64 { f64::from_bits(v as u64) }
+
 impl Cpu {
     /// Creates a new `Cpu`.
     ///
@@ -204,8 +211,8 @@ impl Cpu {
     pub fn read_register(&self, reg: Reg) -> i64 { self.rf[reg] }
 
     /// Checks that float instructions are enabled and
-    /// that the rounding mode is legal (XXX this should be part of format!)
-    fn check_float_access(&self, rm: usize) -> Result<(), Exception> {
+    /// that the rounding mode is legal; do not dirty the FP state
+    fn check_float_access_ro(&self, rm: usize) -> Result<(), Exception> {
         if self.fs == 0 || rm == 5 || rm == 6 {
             Err(Exception {
                 trap: Trap::IllegalInstruction,
@@ -214,6 +221,14 @@ impl Cpu {
         } else {
             Ok(())
         }
+    }
+
+    /// Checks that float instructions are enabled and
+    /// that the rounding mode is legal; dirty the FP state
+    fn check_float_access(&mut self, rm: usize) -> Result<(), Exception> {
+        self.check_float_access_ro(rm)?;
+        self.fs = 3;
+        Ok(())
     }
 
     /// Runs program N cycles. Fetch, decode, and execution are completed in a
@@ -272,12 +287,12 @@ impl Cpu {
             rs2: self.read_x(reg_info.rs2),
             rs3: self.read_x(reg_info.rs3),
         };
-        (decoded.operation)(self, self.insn_addr, insn, values)
-        //let result = (decoded.operation)(self, self.insn_addr, insn, reads)?;
-        //if let Some((dest_reg, value)) = result {
-        //    self.write_x(dest_reg, value);
-        //}
-        // Ok(())
+        if let Some(res) = (decoded.operation)(self, self.insn_addr, insn, values)? {
+            self.write_x(reg_info.rd, res);
+        } else {
+            assert_eq!(reg_info.rd.get(), 64);
+        }
+        Ok(())
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -551,7 +566,7 @@ impl Cpu {
         };
 
         match csr {
-            Csr::Fflags | Csr::Frm | Csr::Fcsr => self.check_float_access(0)?,
+            Csr::Fflags | Csr::Frm | Csr::Fcsr => self.check_float_access_ro(0)?,
             Csr::Satp => {
                 if self.mmu.prv == S && self.mmu.mstatus & MSTATUS_TVM != 0 {
                     return illegal;
@@ -742,34 +757,14 @@ impl Cpu {
         self.mmu.get_mut_uart().get_mut_terminal()
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read_f32(&self, r: Reg) -> f32 {
-        assert_ne!(self.fs, 0);
-        f32::from_bits(Sf32::unbox(self.read_f(r)) as u32)
-    }
-
     fn read_f(&self, r: Reg) -> i64 {
         assert!(32 <= r.get() && r.get() < 64);
         assert_ne!(self.fs, 0);
         self.rf[r]
     }
 
-    fn write_f(&mut self, r: Reg, v: i64) {
-        assert!(32 <= r.get() && r.get() < 64);
-        assert_ne!(self.fs, 0);
-        self.rf[r] = v;
-        self.fs = 3;
-    }
-
-    fn write_f32(&mut self, r: Reg, f: f32) {
-        assert!(32 <= r.get() && r.get() < 64);
-        self.write_f(r, fp::NAN_BOX_F32 | i64::from(f.to_bits()));
-    }
-
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn read_f64(&self, r: Reg) -> f64 { f64::from_bits(self.read_f(r) as u64) }
-
-    fn write_f64(&mut self, r: Reg, f: f64) { self.write_f(r, f.to_bits() as i64); }
 
     fn read_frm(&self) -> RoundingMode {
         assert_ne!(self.fs, 0);
@@ -939,7 +934,11 @@ impl Cpu {
             r |= u64::from(b) << (i * 8);
             v >>= 8;
         }
-        if access == Write { Ok(0) } else { Ok(r as i64) }
+        if access == Write {
+            Ok(0)
+        } else {
+            Ok(r as i64)
+        }
     }
 }
 
@@ -952,6 +951,7 @@ const fn decode(fdt: &[u16], word: u32) -> Result<&Instruction, ()> {
     }
 }
 
+#[allow(clippy::type_complexity)]
 #[derive(Debug)]
 struct Instruction {
     mask: u32,
@@ -962,7 +962,7 @@ struct Instruction {
         address: i64,
         word: u32,
         values: RegisterInfo<i64>,
-    ) -> Result<(), Exception>, /* XXX #[must_use] */
+    ) -> Result<Option<i64>, Exception>, /* XXX #[must_use] */
     disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
     get_registers: fn(word: u32) -> RegisterInfo<Reg>,
 }
@@ -1595,10 +1595,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000007f,
         bits: 0x00000037,
         name: "LUI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, _values| {
             let f = parse_format_u(word);
-            cpu.write_x(f.rd, f.imm);
-            Ok(())
+            Ok(Some(f.imm))
         },
         disassemble: dump_format_u,
         get_registers: get_registers_u,
@@ -1607,10 +1606,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000007f,
         bits: 0x00000017,
         name: "AUIPC",
-        operation: |cpu, address, word, _values| {
+        operation: |_cpu, address, word, _values| {
             let f = parse_format_u(word);
-            cpu.write_x(f.rd, address.wrapping_add(f.imm));
-            Ok(())
+            Ok(Some(address.wrapping_add(f.imm)))
         },
         disassemble: dump_format_u,
         get_registers: get_registers_u,
@@ -1621,9 +1619,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "JAL",
         operation: |cpu, address, word, _values| {
             let f = parse_format_j(word);
-            cpu.write_x(f.rd, cpu.pc);
+            let tmp = cpu.pc;
             cpu.pc = address.wrapping_add(f.imm);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_j,
         get_registers: get_registers_j,
@@ -1636,8 +1634,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_i(word);
             let tmp = cpu.pc;
             cpu.pc = values.rs1.wrapping_add(f.imm) & !1;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: |s, cpu, _address, word, evaluate| {
             let f = parse_format_i(word);
@@ -1655,12 +1652,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00000063,
         name: "BEQ",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if cpu.read_x(f.rs1) == cpu.read_x(f.rs2) {
+            if values.rs1 == values.rs2 {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1669,12 +1666,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00001063,
         name: "BNE",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if cpu.read_x(f.rs1) != cpu.read_x(f.rs2) {
+            if values.rs1 != values.rs2 {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1683,12 +1680,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00004063,
         name: "BLT",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if cpu.read_x(f.rs1) < cpu.read_x(f.rs2) {
+            if values.rs1 < values.rs2 {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1697,12 +1694,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00005063,
         name: "BGE",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if cpu.read_x(f.rs1) >= cpu.read_x(f.rs2) {
+            if values.rs1 >= values.rs2 {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1711,12 +1708,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00006063,
         name: "BLTU",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if (cpu.read_x(f.rs1) as u64) < (cpu.read_x(f.rs2) as u64) {
+            if (values.rs1 as u64) < (values.rs2 as u64) {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1725,12 +1722,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00007063,
         name: "BGEU",
-        operation: |cpu, address, word, _values| {
+        operation: |cpu, address, word, values| {
             let f = parse_format_b(word);
-            if (cpu.read_x(f.rs1) as u64) >= (cpu.read_x(f.rs2) as u64) {
+            if (values.rs1 as u64) >= (values.rs2 as u64) {
                 cpu.pc = address.wrapping_add(f.imm);
             }
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_b,
         get_registers: get_registers_b,
@@ -1739,12 +1736,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00000003,
         name: "LB",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 1)? as i8 as i64;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -1753,12 +1749,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00001003,
         name: "LH",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 2)? as i16 as i64;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -1767,12 +1762,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002003,
         name: "LW",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 4)?;
-            cpu.write_x(f.rd, v as i32 as i64);
-            Ok(())
+            Ok(Some(v as i32 as i64))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -1781,12 +1775,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00004003,
         name: "LBU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 1)?;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -1795,12 +1788,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00005003,
         name: "LHU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 2)?;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -1809,12 +1801,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00000023,
         name: "SB",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+            let s1 = values.rs1;
+            let s2 = values.rs2;
             let _ = cpu.memop(Write, s1, f.imm, s2, 1)?;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s,
@@ -1823,12 +1815,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00001023,
         name: "SH",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+            let s1 = values.rs1;
+            let s2 = values.rs2;
             let _ = cpu.memop(Write, s1, f.imm, s2, 2)?;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s,
@@ -1837,12 +1829,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002023,
         name: "SW",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+            let s1 = values.rs1;
+            let s2 = values.rs2;
             let _ = cpu.memop(Write, s1, f.imm, s2, 4)?;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s,
@@ -1851,11 +1843,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00000013,
         name: "ADDI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1.wrapping_add(f.imm));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1.wrapping_add(f.imm)))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1864,11 +1855,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002013,
         name: "SLTI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from(s1 < f.imm));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from(s1 < f.imm)))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1877,11 +1867,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003013,
         name: "SLTIU",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from((s1 as u64) < (f.imm as u64)));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from((s1 as u64) < (f.imm as u64))))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1890,11 +1879,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00004013,
         name: "XORI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1 ^ f.imm);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1 ^ f.imm))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1903,11 +1891,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00006013,
         name: "ORI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1 | f.imm);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1 | f.imm))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1916,11 +1903,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00007013,
         name: "ANDI",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1 & f.imm);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1 & f.imm))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -1932,12 +1918,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00000033,
         name: "ADD",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1.wrapping_add(s2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1.wrapping_add(s2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -1946,12 +1930,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x40000033,
         name: "SUB",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1.wrapping_sub(s2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1.wrapping_sub(s2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -1960,12 +1942,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00001033,
         name: "SLL",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1.wrapping_shl(s2 as u32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1.wrapping_shl(s2 as u32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -1974,12 +1954,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00002033,
         name: "SLT",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from(s1 < s2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from(s1 < s2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -1988,12 +1966,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00003033,
         name: "SLTU",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
-            cpu.write_x(f.rd, i64::from(s1 < s2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
+            Ok(Some(i64::from(s1 < s2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2002,12 +1978,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00004033,
         name: "XOR",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1 ^ s2);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1 ^ s2))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2016,12 +1990,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00005033,
         name: "SRL",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
-            cpu.write_x(f.rd, s1.wrapping_shr(s2) as i64);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
+            Ok(Some(s1.wrapping_shr(s2) as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2030,12 +2002,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x40005033,
         name: "SRA",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1.wrapping_shr(s2 as u32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1.wrapping_shr(s2 as u32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2044,12 +2014,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00006033,
         name: "OR",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1 | s2);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1 | s2))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2058,12 +2026,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x00007033,
         name: "AND",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1 & s2);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1 & s2))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2079,7 +2045,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
                 log::trace!("pause isn't yet implemented");
             }
             // Fence memory ops (we are currently TSO already)
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -2090,7 +2056,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FENCE.TSO",
         operation: |_cpu, __address, _word, _values| {
             // Fence memory ops (we are currently TSO already)
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -2134,12 +2100,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00006003,
         name: "LWU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 4)?;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -2148,12 +2113,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003003,
         name: "LD",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 8)?;
-            cpu.write_x(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i,
@@ -2162,12 +2126,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003023,
         name: "SD",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+            let s1 = values.rs1;
+            let s2 = values.rs2;
             let _ = cpu.memop(Write, s1, f.imm, s2, 8)?;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s,
@@ -2176,13 +2140,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfc00707f, // RV64I version!
         bits: 0x00001013,
         name: "SLLI",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
+        operation: |_cpu, _address, word, values| {
             let mask = 0x3f;
             let shamt = (word >> 20) & mask;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1 << shamt);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1 << shamt))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2191,13 +2153,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfc00707f,
         bits: 0x00005013,
         name: "SRLI",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
+        operation: |_cpu, _address, word, values| {
             let mask = 0x3f;
             let shamt = (word >> 20) & mask;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, ((s1 as u64) >> shamt) as i64);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(((s1 as u64) >> shamt) as i64))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2206,13 +2166,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfc00707f,
         bits: 0x40005013,
         name: "SRAI",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
+        operation: |_cpu, _address, word, values| {
             let mask = 0x3f;
             let shamt = (word >> 20) & mask;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, s1 >> shamt);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(s1 >> shamt))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2221,11 +2179,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x0000001b,
         name: "ADDIW",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_i(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from(s1.wrapping_add(f.imm) as i32));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from(s1.wrapping_add(f.imm) as i32)))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i,
@@ -2234,12 +2191,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0000101b,
         name: "SLLIW",
-        operation: |cpu, _address, word, _values| {
+        operation: |_cpu, _address, word, values| {
             let f = parse_format_r(word);
             let shamt = f.rs2.get();
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from((s1 << shamt) as i32));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from((s1 << shamt) as i32)))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2248,13 +2204,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0000501b,
         name: "SRLIW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
+        operation: |_cpu, _address, word, values| {
             let mask = 0x1f;
             let shamt = (word >> 20) & mask;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from(((s1 as u32) >> shamt) as i32));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from(((s1 as u32) >> shamt) as i32)))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2263,12 +2217,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x4000501b,
         name: "SRAIW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
+        operation: |_cpu, _address, word, values| {
             let shamt = (word >> 20) & 0x1f;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_x(f.rd, i64::from((s1 as i32) >> shamt));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(i64::from((s1 as i32) >> shamt)))
         },
         disassemble: dump_format_ri,
         get_registers: get_registers_ri,
@@ -2277,12 +2229,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0000003b,
         name: "ADDW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from(s1.wrapping_add(s2) as i32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from(s1.wrapping_add(s2) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2291,12 +2241,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x4000003b,
         name: "SUBW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from(s1.wrapping_sub(s2) as i32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from(s1.wrapping_sub(s2) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2305,12 +2253,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0000103b,
         name: "SLLW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from((s1 as u32).wrapping_shl(s2 as u32) as i32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from((s1 as u32).wrapping_shl(s2 as u32) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2319,12 +2265,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0000503b,
         name: "SRLW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from((s1 as u32).wrapping_shr(s2 as u32) as i32));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from((s1 as u32).wrapping_shr(s2 as u32) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2333,12 +2277,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x4000503b,
         name: "SRAW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from((s1 as i32).wrapping_shr(s2 as u32)));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from((s1 as i32).wrapping_shr(s2 as u32))))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2351,7 +2293,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, _word, _values| {
             // Flush any cached instrutions.  We have none so far.
             cpu.reservation = None;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -2361,19 +2303,20 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00001073,
         name: "CSRRW",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
 
-            let tmp = cpu.read_x(f.rs);
-            if f.rd.is_x0_dest() {
+            let tmp = values.rs1;
+            let res = if f.rd.is_x0_dest() {
                 cpu.write_csr(f.csr, tmp as u64)?;
+                0
             } else {
                 let v = cpu.read_csr(f.csr)? as i64;
                 cpu.write_csr(f.csr, tmp as u64)?;
-                cpu.write_x(f.rd, v);
-            }
+                v
+            };
 
-            Ok(())
+            Ok(Some(res))
         },
         disassemble: dump_format_csr,
         get_registers: get_registers_csr,
@@ -2382,15 +2325,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002073,
         name: "CSRRS",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs.get() != 0 {
-                let value = cpu.read_x(f.rs);
+                let value = values.rs1;
                 cpu.write_csr(f.csr, (data | value) as u64)?;
             }
-            cpu.write_x(f.rd, data);
-            Ok(())
+            Ok(Some(data))
         },
         disassemble: dump_format_csr,
         get_registers: get_registers_csr,
@@ -2399,15 +2341,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003073,
         name: "CSRRC",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs.get() != 0 {
-                let value = cpu.read_x(f.rs);
+                let value = values.rs1;
                 cpu.write_csr(f.csr, (data & !value) as u64)?;
             }
-            cpu.write_x(f.rd, data);
-            Ok(())
+            Ok(Some(data))
         },
         disassemble: dump_format_csr,
         get_registers: get_registers_csr,
@@ -2419,15 +2360,16 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
 
-            if f.rd.is_x0_dest() {
+            let res = if f.rd.is_x0_dest() {
                 cpu.write_csr(f.csr, f.rs.get() as u64)?;
+                0
             } else {
                 let v = cpu.read_csr(f.csr)? as i64;
                 cpu.write_csr(f.csr, f.rs.get() as u64)?;
-                cpu.write_x(f.rd, v);
-            }
+                v
+            };
 
-            Ok(())
+            Ok(Some(res))
         },
         disassemble: dump_format_csri,
         get_registers: get_registers_csri,
@@ -2442,8 +2384,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             if f.rs.get() != 0 {
                 cpu.write_csr(f.csr, (data | f.rs.get() as i64) as u64)?;
             }
-            cpu.write_x(f.rd, data);
-            Ok(())
+            Ok(Some(data))
         },
         disassemble: dump_format_csri,
         get_registers: get_registers_csri,
@@ -2458,8 +2399,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             if f.rs.get() != 0 {
                 cpu.write_csr(f.csr, (data & !(f.rs.get() as i64)) as u64)?;
             }
-            cpu.write_x(f.rd, data);
-            Ok(())
+            Ok(Some(data))
         },
         disassemble: dump_format_csri,
         get_registers: get_registers_csri,
@@ -2469,12 +2409,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02000033,
         name: "MUL",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s1.wrapping_mul(s2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s1.wrapping_mul(s2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2483,12 +2421,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02001033,
         name: "MULH",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, ((i128::from(s1) * i128::from(s2)) >> 64) as i64);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(((i128::from(s1) * i128::from(s2)) >> 64) as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2497,15 +2433,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02002033,
         name: "MULHSU",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(
-                f.rd,
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(
                 ((s1 as u128).wrapping_mul(u128::from(s2 as u64)) >> 64) as i64,
-            );
-            Ok(())
+            ))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2514,12 +2447,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02003033,
         name: "MULHU",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = u128::from(cpu.read_x(f.rs1) as u64);
-            let s2 = u128::from(cpu.read_x(f.rs2) as u64);
-            cpu.write_x(f.rd, (s1.wrapping_mul(s2) >> 64) as i64);
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = u128::from(values.rs1 as u64);
+            let s2 = u128::from(values.rs2 as u64);
+            Ok(Some((s1.wrapping_mul(s2) >> 64) as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2528,18 +2459,17 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02004033,
         name: "DIV",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let dividend = cpu.read_x(f.rs1);
-            let divisor = cpu.read_x(f.rs2);
-            if divisor == 0 {
-                cpu.write_x(f.rd, -1);
+        operation: |_cpu, _address, _word, values| {
+            let dividend = values.rs1;
+            let divisor = values.rs2;
+            let res = if divisor == 0 {
+                -1
             } else if dividend == i64::MIN && divisor == -1 {
-                cpu.write_x(f.rd, dividend);
+                dividend
             } else {
-                cpu.write_x(f.rd, dividend.wrapping_div(divisor));
-            }
-            Ok(())
+                dividend.wrapping_div(divisor)
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2548,16 +2478,15 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02005033,
         name: "DIVU",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let dividend = cpu.read_x(f.rs1) as u64;
-            let divisor = cpu.read_x(f.rs2) as u64;
-            if divisor == 0 {
-                cpu.write_x(f.rd, -1);
+        operation: |_cpu, _address, _word, values| {
+            let dividend = values.rs1 as u64;
+            let divisor = values.rs2 as u64;
+            let res = if divisor == 0 {
+                -1
             } else {
-                cpu.write_x(f.rd, dividend.wrapping_div(divisor) as i64);
-            }
-            Ok(())
+                dividend.wrapping_div(divisor) as i64
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2566,18 +2495,17 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02006033,
         name: "REM",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            if s2 == 0 {
-                cpu.write_x(f.rd, s1);
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            let res = if s2 == 0 {
+                s1
             } else if s1 == i64::MIN && s2 == -1 {
-                cpu.write_x(f.rd, 0);
+                0
             } else {
-                cpu.write_x(f.rd, s1.wrapping_rem(s2));
-            }
-            Ok(())
+                s1.wrapping_rem(s2)
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2586,15 +2514,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x02007033,
         name: "REMU",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
-            cpu.write_x(f.rd, match s2 {
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
+            Ok(Some(match s2 {
                 0 => s1 as i64,
                 _ => s1.wrapping_rem(s2) as i64,
-            });
-            Ok(())
+            }))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2604,12 +2530,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0200003b,
         name: "MULW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, i64::from((s1 as i32).wrapping_mul(s2 as i32)));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(i64::from((s1 as i32).wrapping_mul(s2 as i32))))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2618,18 +2542,17 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0200403b,
         name: "DIVW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as i32;
-            let s2 = cpu.read_x(f.rs2) as i32;
-            if s2 == 0 {
-                cpu.write_x(f.rd, -1);
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as i32;
+            let s2 = values.rs2 as i32;
+            let res = if s2 == 0 {
+                -1
             } else if s1 == i32::MIN && s2 == -1 {
-                cpu.write_x(f.rd, i64::from(s1 as i32));
+                i64::from(s1)
             } else {
-                cpu.write_x(f.rd, i64::from(s1.wrapping_div(s2) as i32));
-            }
-            Ok(())
+                i64::from(s1.wrapping_div(s2))
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2638,16 +2561,15 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0200503b,
         name: "DIVUW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u32;
-            let s2 = cpu.read_x(f.rs2) as u32;
-            if s2 == 0 {
-                cpu.write_x(f.rd, -1);
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as u32;
+            let s2 = values.rs2 as u32;
+            let res = if s2 == 0 {
+                -1
             } else {
-                cpu.write_x(f.rd, i64::from(s1.wrapping_div(s2) as i32));
-            }
-            Ok(())
+                i64::from(s1.wrapping_div(s2) as i32)
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2656,18 +2578,17 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0200603b,
         name: "REMW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as i32;
-            let s2 = cpu.read_x(f.rs2) as i32;
-            if s2 == 0 {
-                cpu.write_x(f.rd, i64::from(s1));
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as i32;
+            let s2 = values.rs2 as i32;
+            let res = if s2 == 0 {
+                i64::from(s1)
             } else if s1 == i32::MIN && s2 == -1 {
-                cpu.write_x(f.rd, 0);
+                0
             } else {
-                cpu.write_x(f.rd, i64::from(s1.wrapping_rem(s2)));
-            }
-            Ok(())
+                i64::from(s1.wrapping_rem(s2))
+            };
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2676,15 +2597,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0200703b,
         name: "REMUW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u32;
-            let s2 = cpu.read_x(f.rs2) as u32;
-            cpu.write_x(f.rd, match s2 {
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1 as u32;
+            let s2 = values.rs2 as u32;
+            Ok(Some(match s2 {
                 0 => i64::from(s1 as i32),
                 _ => i64::from(s1.wrapping_rem(s2) as i32),
-            });
-            Ok(())
+            }))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2694,16 +2613,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf9f0707f,
         bits: 0x1000202f,
         name: "LR.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let va = cpu.read_x(f.rs1);
+        operation: |cpu, _address, _word, values| {
+            let va = values.rs1;
             let data = cpu.mmu.load_virt_u32(va as u64)? as i32;
             let pa = cpu
                 .mmu
                 .translate_address(va as u64, MemoryAccessType::Read, false)?;
             cpu.reservation = Some(pa);
-            cpu.write_x(f.rd, i64::from(data));
-            Ok(())
+            Ok(Some(i64::from(data)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2712,21 +2629,20 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x1800202f,
         name: "SC.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let va = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let va = values.rs1;
+            let s2 = values.rs2;
             let pa = cpu
                 .mmu
                 .translate_address(va as u64, MemoryAccessType::Read, false)?;
-            if cpu.reservation == Some(pa) {
+            let res = if cpu.reservation == Some(pa) {
                 cpu.mmu.store_virt_u32(va as u64, s2 as u32)?;
-                cpu.write_x(f.rd, 0);
+                0
             } else {
-                cpu.write_x(f.rd, 1);
-            }
+                1
+            };
             cpu.reservation = None;
-            Ok(())
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2735,14 +2651,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x0800202f,
         name: "AMOSWAP.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
             let tmp = i64::from(cpu.mmu.load_virt_u32(s1)? as i32);
             cpu.mmu.store_virt_u32(s1, s2)?;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2751,14 +2665,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x0000202f,
         name: "AMOADD.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
             let tmp = cpu.mmu.load_virt_u32(s1)?;
             cpu.mmu.store_virt_u32(s1, tmp.wrapping_add(s2))?;
-            cpu.write_x(f.rd, i64::from(tmp as i32));
-            Ok(())
+            Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2767,14 +2679,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x2000202f,
         name: "AMOXOR.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
             let tmp = cpu.mmu.load_virt_u32(s1)?;
             cpu.mmu.store_virt_u32(s1, s2 ^ tmp)?;
-            cpu.write_x(f.rd, i64::from(tmp as i32));
-            Ok(())
+            Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2783,14 +2693,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x6000202f,
         name: "AMOAND.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2;
             let tmp = i64::from(cpu.mmu.load_virt_u32(s1)? as i32);
             cpu.mmu.store_virt_u32(s1, (s2 & tmp) as u32)?;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2799,14 +2707,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x4000202f,
         name: "AMOOR.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2;
             let tmp = i64::from(cpu.mmu.load_virt_u32(s1)? as i32);
             cpu.mmu.store_virt_u32(s1, (s2 | tmp) as u32)?;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2815,15 +2721,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x8000202f,
         name: "AMOMIN.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as i32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as i32;
             let tmp = cpu.mmu.load_virt_u32(s1)? as i32;
             let min = if s2 < tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u32(s1, min as u32)?;
-            cpu.write_x(f.rd, i64::from(tmp));
-            Ok(())
+            Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2832,15 +2736,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xa000202f,
         name: "AMOMAX.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as i32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as i32;
             let tmp = cpu.mmu.load_virt_u32(s1)? as i32;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u32(s1, max as u32)?;
-            cpu.write_x(f.rd, i64::from(tmp));
-            Ok(())
+            Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2849,15 +2751,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xc000202f,
         name: "AMOMINU.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
             let tmp = cpu.mmu.load_virt_u32(s1)?;
             let min = if s2 <= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u32(s1, min)?;
-            cpu.write_x(f.rd, i64::from(tmp as i32));
-            Ok(())
+            Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2866,15 +2766,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xe000202f,
         name: "AMOMAXU.W",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u32;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u32;
             let tmp = cpu.mmu.load_virt_u32(s1)?;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u32(s1, max)?;
-            cpu.write_x(f.rd, i64::from(tmp as i32));
-            Ok(())
+            Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2884,16 +2782,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf9f0707f,
         bits: 0x1000302f,
         name: "LR.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let va = cpu.read_x(f.rs1);
+        operation: |cpu, _address, _word, values| {
+            let va = values.rs1;
             let data = cpu.mmu.load_virt_u64(va as u64)?;
             let pa = cpu
                 .mmu
                 .translate_address(va as u64, MemoryAccessType::Read, false)?;
             cpu.reservation = Some(pa);
-            cpu.write_x(f.rd, data as i64);
-            Ok(())
+            Ok(Some(data as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2902,21 +2798,20 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x1800302f,
         name: "SC.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let va = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let va = values.rs1;
+            let s2 = values.rs2;
             let pa = cpu
                 .mmu
                 .translate_address(va as u64, MemoryAccessType::Read, false)?;
-            if cpu.reservation == Some(pa) {
+            let res = if cpu.reservation == Some(pa) {
                 cpu.mmu.store_virt_u64(va as u64, s2 as u64)?;
-                cpu.write_x(f.rd, 0);
+                0
             } else {
-                cpu.write_x(f.rd, 1);
-            }
+                1
+            };
             cpu.reservation = None;
-            Ok(())
+            Ok(Some(res))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2925,15 +2820,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x0800302f,
         name: "AMOSWAP.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             cpu.mmu.store_virt_u64(s1, s2)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2942,15 +2835,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x0000302f,
         name: "AMOADD.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp.wrapping_add(s2))?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2959,15 +2850,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x2000302f,
         name: "AMOXOR.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp ^ s2)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2976,15 +2865,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x6000302f,
         name: "AMOAND.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp & s2)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -2993,15 +2880,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x4000302f,
         name: "AMOOR.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             cpu.mmu.store_virt_u64(s1, tmp | s2)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -3010,16 +2895,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0x8000302f,
         name: "AMOMIN.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2;
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             let min = if s2 < tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, min as u64)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -3028,16 +2911,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xa000302f,
         name: "AMOMAX.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2);
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2;
             let tmp = cpu.mmu.load_virt_u64(s1)? as i64;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, max as u64)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp);
-            Ok(())
+            Ok(Some(tmp))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -3046,16 +2927,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xc000302f,
         name: "AMOMINU.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             let min = if s2 <= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, min)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -3064,16 +2943,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf800707f,
         bits: 0xe000302f,
         name: "AMOMAXU.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1) as u64;
-            let s2 = cpu.read_x(f.rs2) as u64;
+        operation: |cpu, _address, _word, values| {
+            let s1 = values.rs1 as u64;
+            let s2 = values.rs2 as u64;
             let tmp = cpu.mmu.load_virt_u64(s1)?;
             let max = if s2 >= tmp { s2 } else { tmp };
             cpu.mmu.store_virt_u64(s1, max)?;
             cpu.reservation = None;
-            cpu.write_x(f.rd, tmp as i64);
-            Ok(())
+            Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -3083,13 +2960,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002007,
         name: "FLW",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 4)?;
-            cpu.write_f(f.rd, v | fp::NAN_BOX_F32);
-            Ok(())
+            Ok(Some(v | fp::NAN_BOX_F32))
         },
         disassemble: dump_format_i_mem,
         get_registers: get_registers_i_fx,
@@ -3098,13 +2974,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00002027,
         name: "FSW",
-        operation: |cpu, _address, word, _values| {
-            cpu.check_float_access(0)?;
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s_xf(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_f(f.rs2);
+            cpu.check_float_access(0)?;
+            let s1 = values.rs1;
+            let s2 = values.rs2;
             cpu.reservation = None;
-            cpu.mmu.store_virt_u32_(s1.wrapping_add(f.imm), s2)
+            cpu.mmu.store_virt_u32_(s1.wrapping_add(f.imm), s2)?;
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s_xf,
@@ -3113,15 +2990,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x00000043,
         name: "FMADD.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             // XXX Update fflags
-            let s1 = cpu.read_f32(f.rs1);
-            let s2 = cpu.read_f32(f.rs2);
-            let value3 = cpu.read_f32(f.rs3);
-            cpu.write_f32(f.rd, s1.mul_add(s2, value3));
-            Ok(())
+            let s1 = value_to_f32(values.rs1);
+            let s2 = value_to_f32(values.rs2);
+            let value3 = value_to_f32(values.rs3);
+            Ok(Some(value_from_f32(s1.mul_add(s2, value3))))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3130,15 +3006,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x00000047,
         name: "FMSUB.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f32(
-                f.rd,
-                cpu.read_f32(f.rs1)
-                    .mul_add(cpu.read_f32(f.rs2), -cpu.read_f32(f.rs3)),
-            );
-            Ok(())
+            Ok(Some(value_from_f32(value_to_f32(values.rs1).mul_add(
+                value_to_f32(values.rs2),
+                -value_to_f32(values.rs3),
+            ))))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3147,16 +3021,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x0000004b,
         name: "FNMSUB.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f32(
-                f.rd,
-                -(cpu
-                    .read_f32(f.rs1)
-                    .mul_add(cpu.read_f32(f.rs2), -cpu.read_f32(f.rs3))),
-            );
-            Ok(())
+            Ok(Some(value_from_f32(
+                -(value_to_f32(values.rs1)
+                    .mul_add(value_to_f32(values.rs2), -value_to_f32(values.rs3))),
+            )))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3165,16 +3036,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x0000004f,
         name: "FNMADD.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f32(
-                f.rd,
-                -(cpu
-                    .read_f32(f.rs1)
-                    .mul_add(cpu.read_f32(f.rs2), cpu.read_f32(f.rs3))),
-            );
-            Ok(())
+            Ok(Some(value_from_f32(
+                -(value_to_f32(values.rs1)
+                    .mul_add(value_to_f32(values.rs2), value_to_f32(values.rs3))),
+            )))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3183,11 +3051,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x00000053,
         name: "FADD.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f32(f.rd, cpu.read_f32(f.rs1) + cpu.read_f32(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f32(
+                value_to_f32(values.rs1) + value_to_f32(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3196,11 +3065,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x08000053,
         name: "FSUB.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f32(f.rd, cpu.read_f32(f.rs1) - cpu.read_f32(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f32(
+                value_to_f32(values.rs1) - value_to_f32(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3209,12 +3079,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x10000053,
         name: "FMUL.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             // @TODO: Update fcsr
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f32(f.rd, cpu.read_f32(f.rs1) * cpu.read_f32(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f32(
+                value_to_f32(values.rs1) * value_to_f32(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3223,13 +3094,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x18000053,
         name: "FDIV.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             //let rm = cpu.get_rm(word);
 
-            let s1 = cpu.read_f32(f.rs1);
-            let s2 = cpu.read_f32(f.rs2);
+            let s1 = value_to_f32(values.rs1);
+            let s2 = value_to_f32(values.rs2);
             // Is this implementation correct?
             let r = if s2 == 0.0 {
                 cpu.set_fcsr_dz();
@@ -3241,8 +3112,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
                 s1 / s2
             };
 
-            cpu.write_f32(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f32(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3251,11 +3121,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0x58000053,
         name: "FSQRT.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f32(f.rd, cpu.read_f32(f.rs1).sqrt());
-            Ok(())
+            Ok(Some(value_from_f32(value_to_f32(values.rs1).sqrt())))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3264,14 +3133,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20000053,
         name: "FSGNJ.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
-            let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
+            let rs2_bits = Sf32::unbox(values.rs2);
             let sign_bit = rs2_bits & (0x80000000u64 as i64);
-            cpu.write_f(f.rd, fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff));
-            Ok(())
+            Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3280,14 +3148,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20001053,
         name: "FSGNJN.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
-            let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
+            let rs2_bits = Sf32::unbox(values.rs2);
             let sign_bit = !rs2_bits & (0x80000000u64 as i64);
-            cpu.write_f(f.rd, fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff));
-            Ok(())
+            Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3296,14 +3163,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20002053,
         name: "FSGNJX.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
-            let rs2_bits = Sf32::unbox(cpu.read_f(f.rs2));
+            let rs2_bits = Sf32::unbox(values.rs2);
             let sign_bit = rs2_bits & (0x80000000u64 as i64);
-            cpu.write_f(f.rd, fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits));
-            Ok(())
+            Ok(Some(fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3312,13 +3178,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x28000053,
         name: "FMIN.S",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r_fff(word);
+        operation: |cpu, _address, _word, values| {
             cpu.check_float_access(0)?;
-            let (f1, f2) = (cpu.read_f32(f.rs1), cpu.read_f32(f.rs2));
+            let (f1, f2) = (value_to_f32(values.rs1), value_to_f32(values.rs2));
             let r = if f1 < f2 { f1 } else { f2 };
-            cpu.write_f32(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f32(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3327,13 +3191,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x28001053,
         name: "FMAX.S",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r_fff(word);
+        operation: |cpu, _address, _word, values| {
             cpu.check_float_access(0)?;
-            let (f1, f2) = (cpu.read_f32(f.rs1), cpu.read_f32(f.rs2));
+            let (f1, f2) = (value_to_f32(values.rs1), value_to_f32(values.rs2));
             let r = if f1 > f2 { f1 } else { f2 };
-            cpu.write_f32(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f32(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3342,11 +3204,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc0000053,
         name: "FCVT.W.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, i64::from(cpu.read_f32(f.rs1) as i32));
-            Ok(())
+            Ok(Some(i64::from(value_to_f32(values.rs1) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3355,11 +3216,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc0100053,
         name: "FCVT.WU.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, i64::from(cpu.read_f32(f.rs1) as u32));
-            Ok(())
+            Ok(Some(i64::from(value_to_f32(values.rs1) as u32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3371,8 +3231,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word, _values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
-            cpu.write_x(f.rd, i64::from(cpu.read_f(f.rs1) as i32));
-            Ok(())
+            Ok(Some(i64::from(cpu.read_f(f.rs1) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3381,13 +3240,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa0002053,
         name: "FEQ.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::feq(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf32::feq(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xff,
@@ -3396,13 +3254,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa0001053,
         name: "FLT.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::flt(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf32::flt(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xff,
@@ -3411,13 +3268,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa0000053,
         name: "FLE.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::fle(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf32::fle(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xff,
@@ -3429,8 +3285,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, word, _values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
-            cpu.write_x(f.rd, 1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize);
-            Ok(())
+            Ok(Some(1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3439,13 +3294,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd0000053,
         name: "FCVT.S.W",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let (r, fflags) = cvt_i32_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
-            cpu.write_f(f.rd, r);
+            let (r, fflags) = cvt_i32_sf32(values.rs1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(r))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3454,13 +3308,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd0100053,
         name: "FCVT.S.WU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let (r, fflags) = cvt_u32_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
-            cpu.write_f(f.rd, r);
+            let (r, fflags) = cvt_u32_sf32(values.rs1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(r))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3469,12 +3322,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0707f,
         bits: 0xf0000053,
         name: "FMV.W.X",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f(f.rd, fp::NAN_BOX_F32 | s1);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(fp::NAN_BOX_F32 | s1))
         },
         disassemble: dump_format_r_f,
         get_registers: get_registers_r_fx,
@@ -3484,11 +3336,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc0200053,
         name: "FCVT.L.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, cpu.read_f32(f.rs1) as i64);
-            Ok(())
+            Ok(Some(value_to_f32(values.rs1) as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3497,11 +3348,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc0300053,
         name: "FCVT.LU.S",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, cpu.read_f32(f.rs1) as u64 as i64);
-            Ok(())
+            Ok(Some(value_to_f32(values.rs1) as u64 as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3510,13 +3360,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd0200053,
         name: "FCVT.S.L",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let (r, fflags) = cvt_i64_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
-            cpu.write_f(f.rd, r);
+            let (r, fflags) = cvt_i64_sf32(values.rs1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(r))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3525,15 +3374,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd0300053,
         name: "FCVT.S.LU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let (r, fflags) = cvt_u64_sf32(cpu.read_x(f.rs1), cpu.get_rm(f.funct3));
-
-            cpu.write_f(f.rd, r);
+            let (r, fflags) = cvt_u64_sf32(values.rs1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
 
-            Ok(())
+            Ok(Some(r))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3543,13 +3390,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003007,
         name: "FLD",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
-            let s1 = cpu.read_x(f.rs1);
+            let s1 = values.rs1;
             let v = cpu.memop(Read, s1, f.imm, 0, 8)?;
-            cpu.write_f(f.rd, v);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_i,
         get_registers: get_registers_i_fx,
@@ -3558,12 +3404,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0000707f,
         bits: 0x00003027,
         name: "FSD",
-        operation: |cpu, _address, word, _values| {
-            cpu.check_float_access(0)?;
+        operation: |cpu, _address, word, values| {
             let f = parse_format_s_xf(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_f(f.rs2);
-            cpu.mmu.store64(s1.wrapping_add(f.imm), s2)
+            cpu.check_float_access(0)?;
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            cpu.mmu.store64(s1.wrapping_add(f.imm), s2)?;
+            Ok(None)
         },
         disassemble: dump_format_s,
         get_registers: get_registers_s_xf,
@@ -3572,15 +3419,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x02000043,
         name: "FMADD.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f64(
-                f.rd,
-                cpu.read_f64(f.rs1)
-                    .mul_add(cpu.read_f64(f.rs2), cpu.read_f64(f.rs3)),
-            );
-            Ok(())
+            Ok(Some(value_from_f64(value_to_f64(values.rs1).mul_add(
+                value_to_f64(values.rs2),
+                value_to_f64(values.rs3),
+            ))))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3589,15 +3434,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x02000047,
         name: "FMSUB.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f64(
-                f.rd,
-                cpu.read_f64(f.rs1)
-                    .mul_add(cpu.read_f64(f.rs2), -cpu.read_f64(f.rs3)),
-            );
-            Ok(())
+            Ok(Some(value_from_f64(value_to_f64(values.rs1).mul_add(
+                value_to_f64(values.rs2),
+                -value_to_f64(values.rs3),
+            ))))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3606,16 +3449,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x0200004b,
         name: "FNMSUB.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f64(
-                f.rd,
+            Ok(Some(value_from_f64(
                 -(cpu
                     .read_f64(f.rs1)
-                    .mul_add(cpu.read_f64(f.rs2), -cpu.read_f64(f.rs3))),
-            );
-            Ok(())
+                    .mul_add(value_to_f64(values.rs2), -value_to_f64(values.rs3))),
+            )))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3624,16 +3465,14 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0x0600007f,
         bits: 0x0200004f,
         name: "FNMADD.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
-            cpu.write_f64(
-                f.rd,
+            Ok(Some(value_from_f64(
                 -(cpu
                     .read_f64(f.rs1)
-                    .mul_add(cpu.read_f64(f.rs2), cpu.read_f64(f.rs3))),
-            );
-            Ok(())
+                    .mul_add(value_to_f64(values.rs2), value_to_f64(values.rs3))),
+            )))
         },
         disassemble: dump_format_r2_ffff,
         get_registers: get_registers_r2_ffff,
@@ -3642,11 +3481,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x02000053,
         name: "FADD.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f64(f.rd, cpu.read_f64(f.rs1) + cpu.read_f64(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f64(
+                value_to_f64(values.rs1) + value_to_f64(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3655,11 +3495,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x0a000053,
         name: "FSUB.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f64(f.rd, cpu.read_f64(f.rs1) - cpu.read_f64(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f64(
+                value_to_f64(values.rs1) - value_to_f64(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3668,12 +3509,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x12000053,
         name: "FMUL.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             // @TODO: Update fcsr
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f64(f.rd, cpu.read_f64(f.rs1) * cpu.read_f64(f.rs2));
-            Ok(())
+            Ok(Some(value_from_f64(
+                value_to_f64(values.rs1) * value_to_f64(values.rs2),
+            )))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3682,11 +3524,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00007f,
         bits: 0x1a000053,
         name: "FDIV.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_f64(f.rs1);
-            let s2 = cpu.read_f64(f.rs2);
+            let s1 = value_to_f64(values.rs1);
+            let s2 = value_to_f64(values.rs2);
             // Is this implementation correct?
             let r = if s2 == 0.0 {
                 cpu.set_fcsr_dz();
@@ -3697,8 +3539,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             } else {
                 s1 / s2
             };
-            cpu.write_f64(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f64(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3707,11 +3548,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0x5a000053,
         name: "FSQRT.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f64(f.rd, cpu.read_f64(f.rs1).sqrt());
-            Ok(())
+            Ok(Some(value_from_f64(value_to_f64(values.rs1).sqrt())))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3720,14 +3560,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x22000053,
         name: "FSGNJ.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
-            let rs2_bits = cpu.read_f(f.rs2);
+            let rs2_bits = values.rs2;
             let sign_bit = rs2_bits & (0x8000000000000000u64 as i64);
-            cpu.write_f(f.rd, sign_bit | (rs1_bits & 0x7fffffffffffffff));
-            Ok(())
+            Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3736,14 +3575,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x22001053,
         name: "FSGNJN.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
-            let rs2_bits = cpu.read_f(f.rs2);
+            let rs2_bits = values.rs2;
             let sign_bit = !rs2_bits & (0x8000000000000000u64 as i64);
-            cpu.write_f(f.rd, sign_bit | (rs1_bits & 0x7fffffffffffffff));
-            Ok(())
+            Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3752,14 +3590,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x22002053,
         name: "FSGNJX.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
-            let rs2_bits = cpu.read_f(f.rs2);
+            let rs2_bits = values.rs2;
             let sign_bit = rs2_bits & (0x8000000000000000u64 as i64);
-            cpu.write_f(f.rd, sign_bit ^ rs1_bits);
-            Ok(())
+            Ok(Some(sign_bit ^ rs1_bits))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3768,13 +3605,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x2A000053,
         name: "FMIN.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r_fff(word);
+        operation: |cpu, _address, _word, values| {
             cpu.check_float_access(0)?;
-            let (f1, f2) = (cpu.read_f64(f.rs1), cpu.read_f64(f.rs2));
+            let (f1, f2) = (value_to_f64(values.rs1), value_to_f64(values.rs2));
             let r = if f1 < f2 { f1 } else { f2 };
-            cpu.write_f64(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f64(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3783,13 +3618,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x2A001053,
         name: "FMAX.D",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r_fff(word);
+        operation: |cpu, _address, _word, values| {
             cpu.check_float_access(0)?;
-            let (f1, f2) = (cpu.read_f64(f.rs1), cpu.read_f64(f.rs2));
+            let (f1, f2) = (value_to_f64(values.rs1), value_to_f64(values.rs2));
             let r = if f1 > f2 { f1 } else { f2 };
-            cpu.write_f64(f.rd, r);
-            Ok(())
+            Ok(Some(value_from_f64(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3798,11 +3631,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0x40100053,
         name: "FCVT.S.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_f32(f.rd, cpu.read_f64(f.rs1) as f32);
-            Ok(())
+            Ok(Some(value_from_f32(value_to_f64(values.rs1) as f32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3815,9 +3647,8 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             let (v, fflags) = fp::fcvt_d_s(cpu.read_f(f.rs1));
-            cpu.write_f(f.rd, v);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(v))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fff,
@@ -3826,14 +3657,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa2002053,
         name: "FEQ.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::feq(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf64::feq(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
 
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_empty,
         get_registers: get_registers_r_xff,
@@ -3842,13 +3672,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa2001053,
         name: "FLT.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::flt(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf64::flt(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xff,
@@ -3857,13 +3686,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0xa2000053,
         name: "FLE.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::fle(cpu.read_f(f.rs1), cpu.read_f(f.rs2));
-            cpu.write_x(f.rd, i64::from(r));
+            let (r, fflags) = Sf64::fle(cpu.read_f(f.rs1), values.rs2);
             cpu.add_to_fflags(fflags);
-            Ok(())
+            Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xff,
@@ -3873,10 +3701,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xe2001053,
         name: "FCLASS.D",
         operation: |cpu, _address, word, _values| {
-            cpu.check_float_access(0)?;
             let f = parse_format_r_xf(word);
-            cpu.write_x(f.rd, 1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize);
-            Ok(())
+            cpu.check_float_access(0)?;
+            Ok(Some(1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3885,11 +3712,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc2000053,
         name: "FCVT.W.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, i64::from(cpu.read_f64(f.rs1) as i32));
-            Ok(())
+            Ok(Some(i64::from(value_to_f64(values.rs1) as i32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3898,11 +3724,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc2100053,
         name: "FCVT.WU.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, i64::from(cpu.read_f64(f.rs1) as u32));
-            Ok(())
+            Ok(Some(i64::from(value_to_f64(values.rs1) as u32)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3911,12 +3736,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd2000053,
         name: "FCVT.D.W",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f64(f.rd, f64::from(s1 as i32));
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(value_from_f64(f64::from(s1 as i32))))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3925,12 +3749,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd2100053,
         name: "FCVT.D.WU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f64(f.rd, f64::from(s1 as u32));
-            Ok(())
+            Ok(Some(value_from_f64(f64::from(values.rs1 as u32))))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3940,11 +3762,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc2200053,
         name: "FCVT.L.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, cpu.read_f64(f.rs1) as i64);
-            Ok(())
+            Ok(Some(value_to_f64(values.rs1) as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3953,11 +3774,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xc2300053,
         name: "FCVT.LU.D",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
-            cpu.write_x(f.rd, cpu.read_f64(f.rs1) as u64 as i64);
-            Ok(())
+            Ok(Some(value_to_f64(values.rs1) as u64 as i64))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3967,10 +3787,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0xe2000053,
         name: "FMV.X.D",
         operation: |cpu, _address, word, _values| {
-            cpu.check_float_access(0)?;
             let f = parse_format_r_xf(word);
-            cpu.write_x(f.rd, cpu.read_f(f.rs1));
-            Ok(())
+            cpu.check_float_access(0)?;
+            Ok(Some(cpu.read_f(f.rs1)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_xf,
@@ -3979,12 +3798,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd2200053,
         name: "FCVT.D.L",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f64(f.rd, s1 as f64);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(value_from_f64(s1 as f64)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -3993,12 +3811,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0007f,
         bits: 0xd2300053,
         name: "FCVT.D.LU",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, word, values| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f64(f.rd, s1 as u64 as f64);
-            Ok(())
+            let s1 = values.rs1;
+            Ok(Some(value_from_f64(s1 as u64 as f64)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -4007,12 +3824,9 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfff0707f,
         bits: 0xf2000053,
         name: "FMV.D.X",
-        operation: |cpu, _address, word, _values| {
+        operation: |cpu, _address, _word, values| {
             cpu.check_float_access(0)?;
-            let f = parse_format_r_fx(word);
-            let s1 = cpu.read_x(f.rs1);
-            cpu.write_f(f.rd, s1);
-            Ok(())
+            Ok(Some(values.rs1))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r_fx,
@@ -4047,7 +3861,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let new_status = (status & !0x21888) | (mprv << 17) | (mpie << 3) | (1 << 7);
             cpu.write_csr_raw(Csr::Mstatus, new_status);
             cpu.mmu.update_priv_mode(priv_mode_from(mpp));
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -4079,7 +3893,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             let new_status = (status & !0x20122) | (mprv << 17) | (spie << 1) | (1 << 5);
             cpu.write_csr_raw(Csr::Sstatus, new_status);
             cpu.mmu.update_priv_mode(priv_mode_from(spp));
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -4100,7 +3914,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
 
             cpu.mmu.clear_page_cache();
             cpu.reservation = None;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -4125,7 +3939,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
                 });
             }
             cpu.wfi = true;
-            Ok(())
+            Ok(None)
         },
         disassemble: dump_empty,
         get_registers: get_registers_empty,
@@ -4135,12 +3949,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0800003b,
         name: "ADD.UW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add(s1 & 0xffffffff));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add(s1 & 0xffffffff)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4149,12 +3961,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20002033,
         name: "SH1ADD",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add(s1 << 1));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add(s1 << 1)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4163,12 +3973,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x2000203b,
         name: "SH1ADD.UW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add((s1 & 0xffffffff) << 1));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add((s1 & 0xffffffff) << 1)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4177,12 +3985,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20004033,
         name: "SH2ADD",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add(s1 << 2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add(s1 << 2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4191,12 +3997,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x2000403b,
         name: "SH2ADD.UW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add((s1 & 0xffffffff) << 2));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add((s1 & 0xffffffff) << 2)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4205,12 +4009,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x20006033,
         name: "SH3ADD",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add(s1 << 3));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add(s1 << 3)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4219,12 +4021,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x2000603b,
         name: "SH3ADD.UW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, s2.wrapping_add((s1 & 0xffffffff) << 3));
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(s2.wrapping_add((s1 & 0xffffffff) << 3)))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4233,13 +4033,11 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0800101b,
         name: "SLLI.UW",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
+        operation: |_cpu, _address, word, values| {
+            let s1 = values.rs1;
             let mask = 0x3f;
             let shamt = (word >> 20) & mask;
-            cpu.write_x(f.rd, (s1 & 0xffffffff) << shamt);
-            Ok(())
+            Ok(Some((s1 & 0xffffffff) << shamt))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4249,12 +4047,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0e005033,
         name: "CZERO.EQZ",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, if s2 == 0 { 0 } else { s1 });
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(if s2 == 0 { 0 } else { s1 }))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4263,12 +4059,10 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xfe00707f,
         bits: 0x0e007033,
         name: "CZERO.NEZ",
-        operation: |cpu, _address, word, _values| {
-            let f = parse_format_r(word);
-            let s1 = cpu.read_x(f.rs1);
-            let s2 = cpu.read_x(f.rs2);
-            cpu.write_x(f.rd, if s2 != 0 { 0 } else { s1 });
-            Ok(())
+        operation: |_cpu, _address, _word, values| {
+            let s1 = values.rs1;
+            let s2 = values.rs2;
+            Ok(Some(if s2 != 0 { 0 } else { s1 }))
         },
         disassemble: dump_format_r,
         get_registers: get_registers_r,
@@ -4517,13 +4311,13 @@ mod test_cpu {
         // Test x0
         assert_eq!(0, cpu.read_register(x(0)));
         cpu.run_soc(1); // Execute  "addi x0, x0, 1"
-        // x0 is still zero because it's hardcoded zero
+                        // x0 is still zero because it's hardcoded zero
         assert_eq!(0, cpu.read_register(x(0)));
 
         // Test x1
         assert_eq!(0, cpu.read_register(x(1)));
         cpu.run_soc(1); // Execute  "addi x1, x1, 1"
-        // x1 is not hardcoded zero
+                        // x1 is not hardcoded zero
         assert_eq!(1, cpu.read_register(x(1)));
     }
 }
