@@ -9,6 +9,7 @@ use crate::mmu::Mmu;
 use crate::riscv;
 use crate::rvc;
 use crate::terminal;
+use anyhow::bail;
 pub use csr::*;
 use fp::RoundingMode;
 use fp::Sf;
@@ -31,6 +32,15 @@ use std::fmt::Write as _;
 use terminal::Terminal;
 
 pub const CONFIG_SW_MANAGED_A_AND_D: bool = false;
+
+/// Holds information about registers used by an instruction.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RegisterInfo {
+    /// Registers that are read by the instruction.
+    pub reads: [Option<u8>; 3],
+    /// Registers that are written to by the instruction.
+    pub writes: [Option<u8>; 1],
+}
 
 pub const PG_SHIFT: usize = 12; // 4K page size
 
@@ -931,8 +941,9 @@ struct Instruction {
     mask: u32,
     bits: u32,
     name: &'static str,
-    operation: fn(cpu: &mut Cpu, address: i64, word: u32) -> Result<(), Exception>,
+    operation: fn(cpu: &mut Cpu, address: i64, word: u32) -> Result<(), Exception>, /* XXX #[must_use] */
     disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
+    get_registers: fn(word: u32) -> RegisterInfo,
 }
 
 #[inline]
@@ -976,6 +987,28 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     }
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
     xd(0)
+}
+
+const fn reg_to_option(r: Reg) -> Option<u8> {
+    let val = r.get();
+    // xd(0) maps to register 64, which is the burn register.
+    // Treat a write to x0 as no write.
+    if val == 64 { None } else { Some(val) }
+}
+
+const fn get_registers_empty(_word: u32) -> RegisterInfo {
+    RegisterInfo {
+        reads: [None, None, None],
+        writes: [None],
+    }
+}
+
+fn get_registers_b(word: u32) -> RegisterInfo {
+    let f = parse_format_b(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [None],
+    }
 }
 
 struct FormatCSR {
@@ -1055,6 +1088,22 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
+fn get_registers_csr(word: u32) -> RegisterInfo {
+    let f = parse_format_csr(word);
+    RegisterInfo {
+        reads: [Some(f.rs.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_csri(word: u32) -> RegisterInfo {
+    let f = parse_format_csr(word); // uimm is not a register read
+    RegisterInfo {
+        reads: [None, None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
 struct FormatI {
     rd: Reg,
     rs1: Reg,
@@ -1117,6 +1166,22 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
+fn get_registers_i(word: u32) -> RegisterInfo {
+    let f = parse_format_i(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_i_fx(word: u32) -> RegisterInfo {
+    let f = parse_format_i_fx(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
 struct FormatJ {
     rd: Reg,
     imm: i64,
@@ -1139,6 +1204,15 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
     f.rd
+}
+
+fn get_registers_j(word: u32) -> RegisterInfo {
+    let f = parse_format_j(word);
+    // JAL reads PC, but not a general purpose register
+    RegisterInfo {
+        reads: [None, None, None],
+        writes: [reg_to_option(f.rd)],
+    }
 }
 
 #[derive(Debug)]
@@ -1218,6 +1292,46 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
+fn get_registers_r(word: u32) -> RegisterInfo {
+    let f = parse_format_r(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_r_xf(word: u32) -> RegisterInfo {
+    let f = parse_format_r_xf(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_r_xff(word: u32) -> RegisterInfo {
+    let f = parse_format_r_xff(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_r_fx(word: u32) -> RegisterInfo {
+    let f = parse_format_r_fx(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
+fn get_registers_r_fff(word: u32) -> RegisterInfo {
+    let f = parse_format_r_fff(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
 fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
     let f = parse_format_r(word);
     *s += get_register_name(f.rd);
@@ -1229,6 +1343,14 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     let shamt = (word >> 20) & 63;
     let _ = write!(s, ", {shamt}");
     f.rd
+}
+
+fn get_registers_ri(word: u32) -> RegisterInfo {
+    let f = parse_format_r(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), None, None],
+        writes: [reg_to_option(f.rd)],
+    }
 }
 
 fn dump_format_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
@@ -1280,6 +1402,18 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
         let _ = write!(s, ":{:x}", cpu.read_f(f.rs3));
     }
     f.rd
+}
+
+fn get_registers_r2_ffff(word: u32) -> RegisterInfo {
+    let f = parse_format_r2_ffff(word);
+    RegisterInfo {
+        reads: [
+            Some(f.rs1.get() as u8),
+            Some(f.rs2.get() as u8),
+            Some(f.rs3.get() as u8),
+        ],
+        writes: [reg_to_option(f.rd)],
+    }
 }
 
 struct FormatS {
@@ -1338,6 +1472,22 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
+fn get_registers_s(word: u32) -> RegisterInfo {
+    let f = parse_format_s(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [None],
+    }
+}
+
+fn get_registers_s_xf(word: u32) -> RegisterInfo {
+    let f = parse_format_s_xf(word);
+    RegisterInfo {
+        reads: [Some(f.rs1.get() as u8), Some(f.rs2.get() as u8), None],
+        writes: [None],
+    }
+}
+
 struct FormatU {
     rd: Reg,
     imm: i64,
@@ -1364,6 +1514,14 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
+fn get_registers_u(word: u32) -> RegisterInfo {
+    let f = parse_format_u(word);
+    RegisterInfo {
+        reads: [None, None, None],
+        writes: [reg_to_option(f.rd)],
+    }
+}
+
 // XXX Could also just implement Display for Reg...
 const fn get_register_name(num: Reg) -> &'static str {
     [
@@ -1373,6 +1531,24 @@ const fn get_register_name(num: Reg) -> &'static str {
         "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20", "f21", "f22", "f23", "f24",
         "f25", "f26", "f27", "f28", "f29", "f30", "f31", "x0",
     ][num.get() as usize]
+}
+
+impl Cpu {
+    /// For a given instruction word, find which registers it may read and
+    /// write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if the instruction word is illegal or cannot be
+    /// decoded.
+    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<RegisterInfo> {
+        let (insn, _) = decompress(0, insn);
+        let Ok(decoded) = decode(&self.decode_dag, insn) else {
+            bail!("Illegal instruction");
+        };
+
+        Ok((decoded.get_registers)(insn))
+    }
 }
 
 const INSTRUCTION_NUM: usize = 173;
@@ -1396,6 +1572,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_u,
+        get_registers: get_registers_u,
     },
     Instruction {
         mask: 0x0000007f,
@@ -1407,6 +1584,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_u,
+        get_registers: get_registers_u,
     },
     Instruction {
         mask: 0x0000007f,
@@ -1419,6 +1597,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_j,
+        get_registers: get_registers_j,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1441,6 +1620,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             *s += ")";
             f.rd
         },
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1454,6 +1634,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1467,6 +1648,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1480,6 +1662,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1493,6 +1676,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1506,6 +1690,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1519,6 +1704,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_b,
+        get_registers: get_registers_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1532,6 +1718,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1545,6 +1732,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1558,6 +1746,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1571,6 +1760,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1584,6 +1774,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1597,6 +1788,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1610,6 +1802,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1623,6 +1816,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1635,6 +1829,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1647,6 +1842,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1659,6 +1855,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1671,6 +1868,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1683,6 +1881,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1695,6 +1894,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     // RV32I SLLI subsumed by RV64I
     // RV32I SRLI subsumed by RV64I
@@ -1711,6 +1911,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1724,6 +1925,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1737,6 +1939,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1750,6 +1953,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1763,6 +1967,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1776,6 +1981,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1789,6 +1995,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1802,6 +2009,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1815,6 +2023,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1828,6 +2037,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf000707f,
@@ -1843,6 +2053,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xf000707f,
@@ -1853,6 +2064,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xffffffff,
@@ -1870,6 +2082,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xffffffff,
@@ -1882,6 +2095,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     // RV64I
     Instruction {
@@ -1896,6 +2110,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1909,6 +2124,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1922,6 +2138,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s,
     },
     Instruction {
         mask: 0xfc00707f, // RV64I version!
@@ -1936,6 +2153,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0xfc00707f,
@@ -1950,6 +2168,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0xfc00707f,
@@ -1964,6 +2183,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1976,6 +2196,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1989,6 +2210,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2003,6 +2225,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2016,6 +2239,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_ri,
+        get_registers: get_registers_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2029,6 +2253,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2042,6 +2267,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2055,6 +2281,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2068,6 +2295,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2081,6 +2309,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // RV32/RV64 Zifencei
     Instruction {
@@ -2093,6 +2322,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     // RV32/RV64 Zicsr
     Instruction {
@@ -2114,6 +2344,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csr,
+        get_registers: get_registers_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2130,6 +2361,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csr,
+        get_registers: get_registers_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2146,6 +2378,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csr,
+        get_registers: get_registers_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2165,6 +2398,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csri,
+        get_registers: get_registers_csri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2180,6 +2414,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csri,
+        get_registers: get_registers_csri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2195,6 +2430,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_csri,
+        get_registers: get_registers_csri,
     },
     // RV32M
     Instruction {
@@ -2209,6 +2445,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2222,6 +2459,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2238,6 +2476,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2251,6 +2490,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2270,6 +2510,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2287,6 +2528,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2306,6 +2548,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2322,6 +2565,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // RV64M
     Instruction {
@@ -2336,6 +2580,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2355,6 +2600,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2372,6 +2618,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2391,6 +2638,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2407,6 +2655,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // RV32A
     Instruction {
@@ -2425,6 +2674,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2447,6 +2697,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2462,6 +2713,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2477,6 +2729,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2492,6 +2745,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2507,6 +2761,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2522,6 +2777,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2538,6 +2794,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2554,6 +2811,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2570,6 +2828,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2586,6 +2845,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // RV64A
     Instruction {
@@ -2604,6 +2864,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2626,6 +2887,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2642,6 +2904,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2658,6 +2921,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2674,6 +2938,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2690,6 +2955,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2706,6 +2972,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2723,6 +2990,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2740,6 +3008,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2757,6 +3026,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2774,6 +3044,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // RV32F
     Instruction {
@@ -2789,6 +3060,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i_mem,
+        get_registers: get_registers_i_fx,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2803,6 +3075,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             cpu.mmu.store_virt_u32_(s1.wrapping_add(f.imm), s2)
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s_xf,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2819,6 +3092,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2835,6 +3109,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2852,6 +3127,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2869,6 +3145,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2881,6 +3158,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2893,6 +3171,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2906,6 +3185,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2933,6 +3213,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -2945,6 +3226,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2960,6 +3242,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2975,6 +3258,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2990,6 +3274,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3004,6 +3289,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3018,6 +3304,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3030,6 +3317,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3042,6 +3330,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3054,6 +3343,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3068,6 +3358,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3082,6 +3373,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3096,6 +3388,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3108,6 +3401,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3122,6 +3416,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3136,6 +3431,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3149,6 +3445,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r_f,
+        get_registers: get_registers_r_fx,
     },
     // RV64F
     Instruction {
@@ -3162,6 +3459,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3174,6 +3472,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3188,6 +3487,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3204,6 +3504,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     // RV32D
     Instruction {
@@ -3219,6 +3520,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_i,
+        get_registers: get_registers_i_fx,
     },
     Instruction {
         mask: 0x0000707f,
@@ -3232,6 +3534,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             cpu.mmu.store64(s1.wrapping_add(f.imm), s2)
         },
         disassemble: dump_format_s,
+        get_registers: get_registers_s_xf,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3248,6 +3551,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3264,6 +3568,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3281,6 +3586,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3298,6 +3604,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r2_ffff,
+        get_registers: get_registers_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3310,6 +3617,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3322,6 +3630,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3335,6 +3644,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3359,6 +3669,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3371,6 +3682,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3386,6 +3698,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3401,6 +3714,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3416,6 +3730,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3430,6 +3745,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3444,6 +3760,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3456,6 +3773,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3470,6 +3788,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3485,6 +3804,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3499,6 +3819,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3513,6 +3834,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xff,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3525,6 +3847,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3537,6 +3860,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3549,6 +3873,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3562,6 +3887,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3575,6 +3901,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     // RV64D
     Instruction {
@@ -3588,6 +3915,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3600,6 +3928,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3612,6 +3941,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3625,6 +3955,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3638,6 +3969,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3651,6 +3983,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r_fx,
     },
     // Remaining (all system-level) that weren't listed in the instr-table
     Instruction {
@@ -3661,6 +3994,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             todo!("Handling dret requires handling all of debug mode")
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xffffffff,
@@ -3684,6 +4018,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xffffffff,
@@ -3715,6 +4050,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xfe007fff,
@@ -3735,6 +4071,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     Instruction {
         mask: 0xffffffff,
@@ -3759,6 +4096,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
     // Zba -- AKA, my only favorite extension
     Instruction {
@@ -3773,6 +4111,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3786,6 +4125,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3799,6 +4139,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3812,6 +4153,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3825,6 +4167,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3838,6 +4181,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3851,6 +4195,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3865,6 +4210,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // Zicond extension
     Instruction {
@@ -3879,6 +4225,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3892,6 +4239,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(())
         },
         disassemble: dump_format_r,
+        get_registers: get_registers_r,
     },
     // Last one is a sentiel and must always be this illegal instruction
     Instruction {
@@ -3905,6 +4253,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
+        get_registers: get_registers_empty,
     },
 ];
 
