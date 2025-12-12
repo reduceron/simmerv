@@ -1134,34 +1134,18 @@ struct FormatI {
 #[allow(clippy::cast_lossless)]
 fn parse_format_i(word: u32) -> FormatI {
     FormatI {
-        rd: xd((word >> 7) & 0x1f),  // [11:7]
-        rs1: x((word >> 15) & 0x1f), // [19:15]
-        imm: (
-            // XXX fix this mess
-            match word & 0x8000_0000 {
-                // imm[31:11] = [31]
-                0x8000_0000 => 0xffff_f800,
-                _ => 0,
-            } | ((word >> 20) & 0x0000_07ff)
-            // imm[10:0] = [30:20]
-        ) as i32 as i64,
+        rd: xd((word >> 7) & 0x1f),        // [11:7]
+        rs1: x((word >> 15) & 0x1f),       // [19:15]
+        imm: ((word as i32) >> 20) as i64, // [31:20]
     }
 }
 
 #[allow(clippy::cast_lossless)]
 fn parse_format_i_fx(word: u32) -> FormatI {
     FormatI {
-        rd: f((word >> 7) & 0x1f),   // [11:7]
-        rs1: x((word >> 15) & 0x1f), // [19:15]
-        imm: (
-            // XXX fix this mess
-            match word & 0x8000_0000 {
-                // imm[31:11] = [31]
-                0x8000_0000 => 0xffff_f800,
-                _ => 0,
-            } | ((word >> 20) & 0x0000_07ff)
-            // imm[10:0] = [30:20]
-        ) as i32 as i64,
+        rd: f((word >> 7) & 0x1f),         // [11:7]
+        rs1: x((word >> 15) & 0x1f),       // [19:15]
+        imm: ((word as i32) >> 20) as i64, // [31:20]
     }
 }
 
