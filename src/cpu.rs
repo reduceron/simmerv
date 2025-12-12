@@ -53,6 +53,17 @@ pub struct RegisterInfo {
     pub rs3: Reg,
 }
 
+impl Default for RegisterInfo {
+    fn default() -> Self {
+        Self {
+            rd: NODESTREG,
+            rs1: ZEROREG,
+            rs2: ZEROREG,
+            rs3: ZEROREG,
+        }
+    }
+}
+
 /// Holds information about registers used by an instruction.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Operands {
@@ -1027,7 +1038,7 @@ fn get_registers_b(word: u32) -> RegisterInfo {
     RegisterInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1113,7 +1124,7 @@ fn get_registers_csr(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1121,7 +1132,7 @@ fn get_registers_csri(word: u32) -> RegisterInfo {
     let f = parse_format_csr(word); // uimm is not a register read
     RegisterInfo {
         rd: f.rd,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1176,7 +1187,7 @@ fn get_registers_i(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1185,7 +1196,7 @@ fn get_registers_i_fx(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1218,7 +1229,7 @@ fn get_registers_j(word: u32) -> RegisterInfo {
     // JAL reads PC, but not a general purpose register
     RegisterInfo {
         rd: f.rd,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1305,7 +1316,7 @@ fn get_registers_r(word: u32) -> RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1314,7 +1325,7 @@ fn get_registers_r_xf(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1324,7 +1335,7 @@ fn get_registers_r_xff(word: u32) -> RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1333,7 +1344,7 @@ fn get_registers_r_fx(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1343,7 +1354,7 @@ fn get_registers_r_fff(word: u32) -> RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1365,7 +1376,7 @@ fn get_registers_ri(word: u32) -> RegisterInfo {
     RegisterInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1491,7 +1502,7 @@ fn get_registers_s(word: u32) -> RegisterInfo {
     RegisterInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1500,7 +1511,7 @@ fn get_registers_s_xf(word: u32) -> RegisterInfo {
     RegisterInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
@@ -1534,7 +1545,7 @@ fn get_registers_u(word: u32) -> RegisterInfo {
     let f = parse_format_u(word);
     RegisterInfo {
         rd: f.rd,
-        ..get_registers_empty(0)
+        ..RegisterInfo::default()
     }
 }
 
