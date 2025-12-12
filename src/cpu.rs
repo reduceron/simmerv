@@ -2054,7 +2054,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xf000707f,
         bits: 0x8000000f,
         name: "FENCE.TSO",
-        operation: |_cpu, __address, _word, _values| {
+        operation: |_cpu, _address, _word, _values| {
             // Fence memory ops (we are currently TSO already)
             Ok(None)
         },
@@ -2291,7 +2291,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         bits: 0x0000100f,
         name: "FENCE.I",
         operation: |cpu, _address, _word, _values| {
-            // Flush any cached instrutions.  We have none so far.
+            // Flush any cached instructions.  We have none so far.
             cpu.reservation = None;
             Ok(None)
         },
@@ -3836,7 +3836,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         mask: 0xffffffff,
         bits: 0x7b200073,
         name: "DRET",
-        operation: |_cpu, __address, _word, _values| {
+        operation: |_cpu, _address, _word, _values| {
             todo!("Handling dret requires handling all of debug mode")
         },
         disassemble: dump_empty,
