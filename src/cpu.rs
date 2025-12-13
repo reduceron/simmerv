@@ -111,7 +111,7 @@ struct Instruction {
     operation:
         fn(cpu: &mut Cpu, address: i64, word: u32, ops: Operands) -> Result<Option<i64>, Exception>,
     disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
-    get_registers: fn(word: u32) -> InstructionInfo,
+    get_instruction_info: fn(word: u32) -> InstructionInfo,
 }
 
 struct FormatB {
@@ -336,7 +336,7 @@ impl Cpu {
         };
 
         self.pc = npc;
-        let reg_info = (decoded.get_registers)(insn);
+        let reg_info = (decoded.get_instruction_info)(insn);
         let values = Operands {
             s1: self.read_x(reg_info.rs1),
             s2: self.read_x(reg_info.rs2),
@@ -1089,13 +1089,14 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     xd(0)
 }
 
-fn get_registers_empty(_word: u32) -> InstructionInfo { InstructionInfo::default() }
+fn get_instruction_info_empty(_word: u32) -> InstructionInfo { InstructionInfo::default() }
 
-fn get_registers_b(word: u32) -> InstructionInfo {
+fn get_instruction_info_b(word: u32) -> InstructionInfo {
     let f = parse_format_b(word);
     InstructionInfo {
         rs1: f.rs1,
         rs2: f.rs2,
+        ctf: true,
         ..InstructionInfo::default()
     }
 }
@@ -1171,19 +1172,21 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
-fn get_registers_csr(word: u32) -> InstructionInfo {
+fn get_instruction_info_csr(word: u32) -> InstructionInfo {
     let f = parse_format_csr(word);
     InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
+        serialize: true,
         ..InstructionInfo::default()
     }
 }
 
-fn get_registers_csri(word: u32) -> InstructionInfo {
+fn get_instruction_info_csri(word: u32) -> InstructionInfo {
     let f = parse_format_csr(word); // uimm is not a register read
     InstructionInfo {
         rd: f.rd,
+        serialize: true,
         ..InstructionInfo::default()
     }
 }
@@ -1228,7 +1231,7 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
-fn get_registers_i(word: u32) -> InstructionInfo {
+fn get_instruction_info_i(word: u32) -> InstructionInfo {
     let f = parse_format_i(word);
     InstructionInfo {
         rd: f.rd,
@@ -1237,7 +1240,7 @@ fn get_registers_i(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_i_fx(word: u32) -> InstructionInfo {
+fn get_instruction_info_i_fx(word: u32) -> InstructionInfo {
     let f = parse_format_i_fx(word);
     InstructionInfo {
         rd: f.rd,
@@ -1265,11 +1268,12 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     f.rd
 }
 
-fn get_registers_j(word: u32) -> InstructionInfo {
+fn get_instruction_info_j(word: u32) -> InstructionInfo {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
     InstructionInfo {
         rd: f.rd,
+        ctf: true,
         ..InstructionInfo::default()
     }
 }
@@ -1343,7 +1347,7 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
-fn get_registers_r(word: u32) -> InstructionInfo {
+fn get_instruction_info_r(word: u32) -> InstructionInfo {
     let f = parse_format_r(word);
     InstructionInfo {
         rd: f.rd,
@@ -1353,7 +1357,7 @@ fn get_registers_r(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_r_xf(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_xf(word: u32) -> InstructionInfo {
     let f = parse_format_r_xf(word);
     InstructionInfo {
         rd: f.rd,
@@ -1362,7 +1366,7 @@ fn get_registers_r_xf(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_r_xff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_xff(word: u32) -> InstructionInfo {
     let f = parse_format_r_xff(word);
     InstructionInfo {
         rd: f.rd,
@@ -1372,7 +1376,7 @@ fn get_registers_r_xff(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_r_fx(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_fx(word: u32) -> InstructionInfo {
     let f = parse_format_r_fx(word);
     InstructionInfo {
         rd: f.rd,
@@ -1381,7 +1385,7 @@ fn get_registers_r_fx(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_r_fff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_fff(word: u32) -> InstructionInfo {
     let f = parse_format_r_fff(word);
     InstructionInfo {
         rd: f.rd,
@@ -1404,7 +1408,7 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     f.rd
 }
 
-fn get_registers_ri(word: u32) -> InstructionInfo {
+fn get_instruction_info_ri(word: u32) -> InstructionInfo {
     let f = parse_format_r(word);
     InstructionInfo {
         rd: f.rd,
@@ -1455,7 +1459,7 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     f.rd
 }
 
-fn get_registers_r2_ffff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r2_ffff(word: u32) -> InstructionInfo {
     let f = parse_format_r2_ffff(word);
     InstructionInfo {
         rd: f.rd,
@@ -1516,7 +1520,7 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
-fn get_registers_s(word: u32) -> InstructionInfo {
+fn get_instruction_info_s(word: u32) -> InstructionInfo {
     let f = parse_format_s(word);
     InstructionInfo {
         rs1: f.rs1,
@@ -1525,7 +1529,7 @@ fn get_registers_s(word: u32) -> InstructionInfo {
     }
 }
 
-fn get_registers_s_xf(word: u32) -> InstructionInfo {
+fn get_instruction_info_s_xf(word: u32) -> InstructionInfo {
     let f = parse_format_s_xf(word);
     InstructionInfo {
         rs1: f.rs1,
@@ -1555,7 +1559,7 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
-fn get_registers_u(word: u32) -> InstructionInfo {
+fn get_instruction_info_u(word: u32) -> InstructionInfo {
     let f = parse_format_u(word);
     InstructionInfo {
         rd: f.rd,
@@ -1588,7 +1592,7 @@ impl Cpu {
             bail!("Illegal instruction");
         };
 
-        Ok((decoded.get_registers)(insn))
+        Ok((decoded.get_instruction_info)(insn))
     }
 }
 
@@ -1610,7 +1614,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(f.imm))
         },
         disassemble: dump_format_u,
-        get_registers: get_registers_u,
+        get_instruction_info: get_instruction_info_u,
     },
     Instruction {
         mask: 0x0000007f,
@@ -1621,7 +1625,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(address.wrapping_add(f.imm)))
         },
         disassemble: dump_format_u,
-        get_registers: get_registers_u,
+        get_instruction_info: get_instruction_info_u,
     },
     Instruction {
         mask: 0x0000007f,
@@ -1634,7 +1638,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_j,
-        get_registers: get_registers_j,
+        get_instruction_info: get_instruction_info_j,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1656,7 +1660,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             *s += ")";
             f.rd
         },
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1670,7 +1674,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1684,7 +1688,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1698,7 +1702,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1712,7 +1716,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1726,7 +1730,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1740,7 +1744,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_registers: get_registers_b,
+        get_instruction_info: get_instruction_info_b,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1752,7 +1756,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1764,7 +1768,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1776,7 +1780,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v as i32 as i64))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1788,7 +1792,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1800,7 +1804,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1812,7 +1816,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s,
+        get_instruction_info: get_instruction_info_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1824,7 +1828,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s,
+        get_instruction_info: get_instruction_info_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1836,7 +1840,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s,
+        get_instruction_info: get_instruction_info_s,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1847,7 +1851,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1.wrapping_add(f.imm)))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1858,7 +1862,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1 < f.imm)))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1869,7 +1873,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as u64) < (f.imm as u64))))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1880,7 +1884,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 ^ f.imm))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1891,7 +1895,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 | f.imm))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -1902,7 +1906,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 & f.imm))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     // RV32I SLLI subsumed by RV64I
     // RV32I SRLI subsumed by RV64I
@@ -1913,7 +1917,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "ADD",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_add(ops.s2))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1921,7 +1925,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SUB",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_sub(ops.s2))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1929,7 +1933,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SLL",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shl(ops.s2 as u32))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1937,7 +1941,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SLT",
         operation: |_cpu, _address, _word, ops| Ok(Some(i64::from(ops.s1 < ops.s2))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1947,7 +1951,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as u64) < (ops.s2 as u64))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1955,7 +1959,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "XOR",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 ^ ops.s2)),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1965,7 +1969,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(((ops.s1 as u64).wrapping_shr(ops.s2 as u32)) as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1973,7 +1977,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SRA",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shr(ops.s2 as u32))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1981,7 +1985,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "OR",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 | ops.s2)),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -1989,7 +1993,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "AND",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 & ops.s2)),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf000707f,
@@ -1997,6 +2001,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "FENCE",
         operation: |_cpu, _address, word, _ops| {
             if word == 0x0100000f {
+                // PAUSE instruction hint
                 // Nothing to do here, but it would be interesting to see
                 // it used.
                 log::trace!("pause isn't yet implemented");
@@ -2005,7 +2010,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            serialize: true,
+            ctf: false,
+            exceptional: false,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xf000707f,
@@ -2016,7 +2026,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            serialize: true,
+            ctf: false,
+            exceptional: false,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xffffffff,
@@ -2034,7 +2049,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            exceptional: true,
+            ctf: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xffffffff,
@@ -2047,7 +2067,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            exceptional: true,
+            ctf: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
     // RV64I
     Instruction {
@@ -2060,7 +2085,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2072,7 +2097,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2084,7 +2109,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s,
+        get_instruction_info: get_instruction_info_s,
     },
     Instruction {
         mask: 0xfc00707f, // RV64I version!
@@ -2092,7 +2117,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SLLI",
         operation: |_cpu, _address, word, ops| Ok(Some(ops.s1 << ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0xfc00707f,
@@ -2102,7 +2127,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(((ops.s1 as u64) >> ((word >> 20) & 0x3f)) as i64))
         },
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0xfc00707f,
@@ -2110,7 +2135,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SRAI",
         operation: |_cpu, _address, word, ops| Ok(Some(ops.s1 >> ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2121,7 +2146,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_add(f.imm) as i32)))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i,
+        get_instruction_info: get_instruction_info_i,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2132,7 +2157,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 << f.rs2.get()) as i32)))
         },
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2144,7 +2169,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2154,7 +2179,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as i32) >> ((word >> 20) & 0x1f))))
         },
         disassemble: dump_format_ri,
-        get_registers: get_registers_ri,
+        get_instruction_info: get_instruction_info_ri,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2164,7 +2189,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_add(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2174,7 +2199,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_sub(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2186,7 +2211,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2198,7 +2223,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2208,7 +2233,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as i32).wrapping_shr(ops.s2 as u32))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // RV32/RV64 Zifencei
     Instruction {
@@ -2221,7 +2246,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: get_instruction_info_empty,
     },
     // RV32/RV64 Zicsr
     Instruction {
@@ -2242,7 +2267,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csr,
-        get_registers: get_registers_csr,
+        get_instruction_info: get_instruction_info_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2257,7 +2282,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        get_registers: get_registers_csr,
+        get_instruction_info: get_instruction_info_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2272,7 +2297,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        get_registers: get_registers_csr,
+        get_instruction_info: get_instruction_info_csr,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2293,7 +2318,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csri,
-        get_registers: get_registers_csri,
+        get_instruction_info: get_instruction_info_csri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2308,7 +2333,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        get_registers: get_registers_csri,
+        get_instruction_info: get_instruction_info_csri,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2323,7 +2348,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        get_registers: get_registers_csri,
+        get_instruction_info: get_instruction_info_csri,
     },
     // RV32M
     Instruction {
@@ -2332,7 +2357,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "MUL",
         operation: |_cpu, _address, _word, values| Ok(Some(values.s1.wrapping_mul(values.s2))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2344,7 +2369,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2356,7 +2381,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2369,7 +2394,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2385,7 +2410,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2399,7 +2424,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2415,7 +2440,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2428,7 +2453,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // RV64M
     Instruction {
@@ -2441,7 +2466,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2457,7 +2482,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2471,7 +2496,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2487,7 +2512,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2500,7 +2525,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // RV32A
     Instruction {
@@ -2516,7 +2541,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(data)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2525,7 +2550,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, _word, ops| {
             let pa = cpu
                 .mmu
-                .translate_address(ops.s1 as u64, MemoryAccessType::Read, false)?;
+                .translate_address(ops.s1 as u64, MemoryAccessType::Write, false)?;
             let res = if cpu.reservation == Some(pa) {
                 cpu.mmu.store_virt_u32(ops.s1 as u64, ops.s2 as u32)?;
                 0
@@ -2536,7 +2561,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2548,7 +2573,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2561,7 +2586,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2574,7 +2599,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2587,7 +2612,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2600,7 +2625,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2613,7 +2638,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2626,7 +2651,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2639,7 +2664,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2652,7 +2677,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // RV64A
     Instruction {
@@ -2668,7 +2693,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2677,7 +2702,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         operation: |cpu, _address, _word, ops| {
             let pa = cpu
                 .mmu
-                .translate_address(ops.s1 as u64, MemoryAccessType::Read, false)?;
+                .translate_address(ops.s1 as u64, MemoryAccessType::Write, false)?;
             let res = if cpu.reservation == Some(pa) {
                 cpu.mmu.store_virt_u64(ops.s1 as u64, ops.s2 as u64)?;
                 0
@@ -2688,7 +2713,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2701,7 +2726,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2715,7 +2740,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2729,7 +2754,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2743,7 +2768,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2757,7 +2782,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2771,7 +2796,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2785,7 +2810,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2799,7 +2824,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xf800707f,
@@ -2813,7 +2838,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // RV32F
     Instruction {
@@ -2827,7 +2852,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v | fp::NAN_BOX_F32))
         },
         disassemble: dump_format_i_mem,
-        get_registers: get_registers_i_fx,
+        get_instruction_info: get_instruction_info_i_fx,
     },
     Instruction {
         mask: 0x0000707f,
@@ -2842,7 +2867,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s_xf,
+        get_instruction_info: get_instruction_info_s_xf,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2857,7 +2882,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2871,7 +2896,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2885,7 +2910,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -2899,7 +2924,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2911,7 +2936,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) + op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2923,7 +2948,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) - op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2936,7 +2961,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) * op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -2956,7 +2981,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -2968,7 +2993,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2983,7 +3008,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -2998,7 +3023,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3013,7 +3038,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3025,7 +3050,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3037,7 +3062,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3049,7 +3074,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f32(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3061,7 +3086,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f32(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3073,7 +3098,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(cpu.read_f(f.rs1) as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3087,7 +3112,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3101,7 +3126,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3115,7 +3140,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3127,7 +3152,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3141,7 +3166,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3155,7 +3180,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3167,7 +3192,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | ops.s1))
         },
         disassemble: dump_format_r_f,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     // RV64F
     Instruction {
@@ -3180,7 +3205,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f32(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3192,7 +3217,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f32(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3206,7 +3231,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3221,7 +3246,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     // RV32D
     Instruction {
@@ -3235,7 +3260,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i,
-        get_registers: get_registers_i_fx,
+        get_instruction_info: get_instruction_info_i_fx,
     },
     Instruction {
         mask: 0x0000707f,
@@ -3248,7 +3273,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_registers: get_registers_s_xf,
+        get_instruction_info: get_instruction_info_s_xf,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3262,7 +3287,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3276,7 +3301,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3292,7 +3317,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0x0600007f,
@@ -3308,7 +3333,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_registers: get_registers_r2_ffff,
+        get_instruction_info: get_instruction_info_r2_ffff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3320,7 +3345,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) + op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3332,7 +3357,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) - op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3345,7 +3370,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) * op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00007f,
@@ -3366,7 +3391,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3378,7 +3403,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3393,7 +3418,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3408,7 +3433,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3423,7 +3448,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit ^ rs1_bits))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3435,7 +3460,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3447,7 +3472,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3459,7 +3484,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f64(ops.s1) as f32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3473,7 +3498,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fff,
+        get_instruction_info: get_instruction_info_r_fff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3488,7 +3513,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_empty,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3502,7 +3527,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3516,7 +3541,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xff,
+        get_instruction_info: get_instruction_info_r_xff,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3528,7 +3553,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3540,7 +3565,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f64(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3552,7 +3577,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f64(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3564,7 +3589,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(f64::from(ops.s1 as i32))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3576,7 +3601,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(f64::from(ops.s1 as u32))))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     // RV64D
     Instruction {
@@ -3589,7 +3614,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f64(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3601,7 +3626,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f64(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3613,7 +3638,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(cpu.read_f(f.rs1)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_xf,
+        get_instruction_info: get_instruction_info_r_xf,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3625,7 +3650,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(ops.s1 as f64)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0007f,
@@ -3637,7 +3662,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(ops.s1 as u64 as f64)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     Instruction {
         mask: 0xfff0707f,
@@ -3648,7 +3673,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r_fx,
+        get_instruction_info: get_instruction_info_r_fx,
     },
     // Remaining (all system-level) that weren't listed in the instr-table
     Instruction {
@@ -3659,7 +3684,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             todo!("Handling dret requires handling all of debug mode")
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            ctf: true,
+            exceptional: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xffffffff,
@@ -3683,7 +3713,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            ctf: true,
+            exceptional: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xffffffff,
@@ -3715,7 +3750,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            ctf: true,
+            exceptional: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xfe007fff,
@@ -3736,7 +3776,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            serialize: true,
+            ctf: false,
+            exceptional: false,
+            ..InstructionInfo::default()
+        },
     },
     Instruction {
         mask: 0xffffffff,
@@ -3761,7 +3806,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            serialize: true,
+            ctf: false,
+            exceptional: false,
+            ..InstructionInfo::default()
+        },
     },
     // Zba -- AKA, my only favorite extension
     Instruction {
@@ -3770,7 +3820,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "ADD.UW",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 & 0xffffffff))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3778,7 +3828,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SH1ADD",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 1))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3788,7 +3838,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 1)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3796,7 +3846,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SH2ADD",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 2))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3806,7 +3856,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 2)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3814,7 +3864,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "SH3ADD",
         operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 3))),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3824,7 +3874,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 3)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3834,7 +3884,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some((ops.s1 & 0xffffffff) << ((word >> 20) & 0x3f)))
         },
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // Zicond extension
     Instruction {
@@ -3843,7 +3893,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "CZERO.EQZ",
         operation: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 == 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     Instruction {
         mask: 0xfe00707f,
@@ -3851,7 +3901,7 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
         name: "CZERO.NEZ",
         operation: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 != 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        get_registers: get_registers_r,
+        get_instruction_info: get_instruction_info_r,
     },
     // Last one is a sentiel and must always be this illegal instruction
     Instruction {
@@ -3865,7 +3915,12 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
-        get_registers: get_registers_empty,
+        get_instruction_info: |_| InstructionInfo {
+            exceptional: true,
+            ctf: true,
+            serialize: true,
+            ..InstructionInfo::default()
+        },
     },
 ];
 
