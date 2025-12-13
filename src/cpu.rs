@@ -531,6 +531,7 @@ impl Cpu {
                     return illegal;
                 }
             }
+            Csr::Time => return illegal,
             _ => {}
         }
         Ok(self.read_csr_raw(csr))
@@ -576,6 +577,7 @@ impl Cpu {
                     return illegal;
                 }
             }
+            Csr::Time => return illegal,
             _ => {}
         }
 
