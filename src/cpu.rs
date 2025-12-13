@@ -1,3 +1,5 @@
+//! The RISC-V CPU core, which handles instruction fetching, decoding, and
+//! execution.
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::cast_possible_wrap)]
 
@@ -31,37 +33,26 @@ use riscv::Trap;
 use std::fmt::Write as _;
 use terminal::Terminal;
 
-pub const CONFIG_SW_MANAGED_A_AND_D: bool = false;
-
-pub const PG_SHIFT: usize = 12; // 4K page size
-
 pub type Reg = Bounded<65>;
-impl Reg {
-    #[must_use]
-    pub const fn is_x0_dest(self) -> bool { self.get() == 64 }
-}
-
-const ZEROREG: Reg = Reg::new(0);
-const NODESTREG: Reg = Reg::new(64);
 
 /// Holds information about registers used by an instruction.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RegisterInfo {
+pub struct InstructionInfo {
+    /// Destination Register
     pub rd: Reg,
+    /// Source Register 1
     pub rs1: Reg,
+    /// Source Register 2
     pub rs2: Reg,
+    /// Source Register 3
     pub rs3: Reg,
-}
-
-impl Default for RegisterInfo {
-    fn default() -> Self {
-        Self {
-            rd: NODESTREG,
-            rs1: ZEROREG,
-            rs2: ZEROREG,
-            rs3: ZEROREG,
-        }
-    }
+    /// May change the Control Flow
+    pub ctf: bool,
+    /// May throw exception (ecall/ebreak are guaranteed to)
+    pub exceptional: bool,
+    /// Serialized instructions cannot execute out-of-order and
+    /// almost certainly change system state
+    pub serialize: bool,
 }
 
 /// Holds information about registers used by an instruction.
@@ -70,36 +61,6 @@ pub struct Operands {
     pub s1: i64,
     pub s2: i64,
     pub s3: i64,
-}
-
-/// Generate a source integer `Reg`
-/// # Panics
-/// Trying to name a register > 31
-#[must_use]
-pub fn x(r: u32) -> Reg {
-    assert!(r < 32);
-    Reg::new(r)
-}
-
-/// Generate a destination integer `Reg`
-/// # Panics
-/// Trying to name a register > 31
-#[must_use]
-pub fn xd(r: u32) -> Reg {
-    assert!(r < 32);
-    // Remap x0 to the burn location 64.  This turns the write
-    // into branch-free code, but the real payoff will come later
-    // when we amortize this
-    Reg::new(((r + 63) & 63) + 1)
-}
-
-/// Generate a source or destination floating point `Reg`
-/// # Panics
-/// Trying to name a register > 31
-#[must_use]
-pub fn f(r: u32) -> Reg {
-    assert!(r < 32);
-    Reg::new(r + 32)
 }
 
 /// Emulates a RISC-V CPU core
@@ -141,21 +102,93 @@ pub struct Exception {
     pub tval: i64,
 }
 
-const fn get_trap_cause(exc: &Exception) -> u64 {
-    let interrupt_bit = 0x8000_0000_0000_0000_u64;
-    if (exc.trap as u64) < (Trap::UserSoftwareInterrupt as u64) {
-        exc.trap as u64
-    } else {
-        exc.trap as u64 - Trap::UserSoftwareInterrupt as u64 + interrupt_bit
-    }
+#[allow(clippy::type_complexity)]
+#[derive(Debug)]
+struct Instruction {
+    mask: u32,
+    bits: u32,
+    name: &'static str,
+    operation:
+        fn(cpu: &mut Cpu, address: i64, word: u32, ops: Operands) -> Result<Option<i64>, Exception>,
+    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
+    get_registers: fn(word: u32) -> InstructionInfo,
 }
 
-fn op_from_f32(f: f32) -> i64 { fp::NAN_BOX_F32 | i64::from(f.to_bits()) }
-const fn op_from_f64(f: f64) -> i64 { f.to_bits() as i64 }
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn op_to_f32(v: i64) -> f32 { f32::from_bits(Sf32::unbox(v) as u32) }
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-const fn op_to_f64(v: i64) -> f64 { f64::from_bits(v as u64) }
+struct FormatB {
+    rs1: Reg,
+    rs2: Reg,
+    imm: i64,
+}
+
+struct FormatCSR {
+    csr: u16,
+    rs1: Reg,
+    rd: Reg,
+}
+
+struct FormatI {
+    rd: Reg,
+    rs1: Reg,
+    imm: i64,
+}
+
+struct FormatJ {
+    rd: Reg,
+    imm: i64,
+}
+
+#[derive(Debug)]
+struct FormatR {
+    rd: Reg,
+    funct3: usize,
+    rs1: Reg,
+    rs2: Reg,
+}
+
+struct FormatS {
+    rs1: Reg,
+    rs2: Reg,
+    imm: i64,
+}
+
+struct FormatU {
+    rd: Reg,
+    imm: i64,
+}
+
+// has rs3
+struct FormatR2 {
+    rd: Reg,
+    rm: usize,
+    rs1: Reg,
+    rs2: Reg,
+    rs3: Reg,
+}
+
+pub const CONFIG_SW_MANAGED_A_AND_D: bool = false;
+pub const PG_SHIFT: usize = 12; // 4K page size
+const ZEROREG: Reg = Reg::new(0);
+const NODESTREG: Reg = Reg::new(64);
+const INSTRUCTION_NUM: usize = 173;
+
+impl Reg {
+    #[must_use]
+    pub const fn is_x0_dest(self) -> bool { self.get() == 64 }
+}
+
+impl Default for InstructionInfo {
+    fn default() -> Self {
+        Self {
+            rd: NODESTREG,
+            rs1: ZEROREG,
+            rs2: ZEROREG,
+            rs3: ZEROREG,
+            ctf: false,
+            exceptional: false,
+            serialize: false,
+        }
+    }
+}
 
 impl Cpu {
     /// Creates a new `Cpu`.
@@ -964,26 +997,21 @@ impl Cpu {
     }
 }
 
-const fn decode(fdt: &[u16], word: u32) -> Result<&Instruction, ()> {
-    let inst = &INSTRUCTIONS[dag_decoder::patmatch(fdt, word)];
-    if word & inst.mask == inst.bits {
-        Ok(inst)
+const fn get_trap_cause(exc: &Exception) -> u64 {
+    let interrupt_bit = 0x8000_0000_0000_0000_u64;
+    if (exc.trap as u64) < (Trap::UserSoftwareInterrupt as u64) {
+        exc.trap as u64
     } else {
-        Err(())
+        exc.trap as u64 - Trap::UserSoftwareInterrupt as u64 + interrupt_bit
     }
 }
 
-#[allow(clippy::type_complexity)]
-#[derive(Debug)]
-struct Instruction {
-    mask: u32,
-    bits: u32,
-    name: &'static str,
-    operation:
-        fn(cpu: &mut Cpu, address: i64, word: u32, ops: Operands) -> Result<Option<i64>, Exception>,
-    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
-    get_registers: fn(word: u32) -> RegisterInfo,
-}
+fn op_from_f32(f: f32) -> i64 { fp::NAN_BOX_F32 | i64::from(f.to_bits()) }
+const fn op_from_f64(f: f64) -> i64 { f.to_bits() as i64 }
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn op_to_f32(v: i64) -> f32 { f32::from_bits(Sf32::unbox(v) as u32) }
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn op_to_f64(v: i64) -> f64 { f64::from_bits(v as u64) }
 
 #[inline]
 const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
@@ -995,10 +1023,43 @@ const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
     }
 }
 
-struct FormatB {
-    rs1: Reg,
-    rs2: Reg,
-    imm: i64,
+const fn decode(fdt: &[u16], word: u32) -> Result<&Instruction, ()> {
+    let inst = &INSTRUCTIONS[dag_decoder::patmatch(fdt, word)];
+    if word & inst.mask == inst.bits {
+        Ok(inst)
+    } else {
+        Err(())
+    }
+}
+
+/// Generate a source integer `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn x(r: u32) -> Reg {
+    assert!(r < 32);
+    Reg::new(r)
+}
+
+/// Generate a destination integer `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn xd(r: u32) -> Reg {
+    assert!(r < 32);
+    // Remap x0 to the burn location 64.  This turns the write
+    // into branch-free code, but the real payoff will come later
+    // when we amortize this
+    Reg::new(((r + 63) & 63) + 1)
+}
+
+/// Generate a source or destination floating point `Reg`
+/// # Panics
+/// Trying to name a register > 31
+#[must_use]
+pub fn f(r: u32) -> Reg {
+    assert!(r < 32);
+    Reg::new(r + 32)
 }
 
 #[allow(clippy::cast_sign_loss, clippy::cast_lossless)]
@@ -1028,28 +1089,15 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     xd(0)
 }
 
-const fn get_registers_empty(_word: u32) -> RegisterInfo {
-    RegisterInfo {
-        rd: NODESTREG,
-        rs1: ZEROREG,
-        rs2: ZEROREG,
-        rs3: ZEROREG,
-    }
-}
+fn get_registers_empty(_word: u32) -> InstructionInfo { InstructionInfo::default() }
 
-fn get_registers_b(word: u32) -> RegisterInfo {
+fn get_registers_b(word: u32) -> InstructionInfo {
     let f = parse_format_b(word);
-    RegisterInfo {
+    InstructionInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
-}
-
-struct FormatCSR {
-    csr: u16,
-    rs1: Reg,
-    rd: Reg,
 }
 
 fn parse_format_csr(word: u32) -> FormatCSR {
@@ -1123,27 +1171,21 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
-fn get_registers_csr(word: u32) -> RegisterInfo {
+fn get_registers_csr(word: u32) -> InstructionInfo {
     let f = parse_format_csr(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_csri(word: u32) -> RegisterInfo {
+fn get_registers_csri(word: u32) -> InstructionInfo {
     let f = parse_format_csr(word); // uimm is not a register read
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
-}
-
-struct FormatI {
-    rd: Reg,
-    rs1: Reg,
-    imm: i64,
 }
 
 #[allow(clippy::cast_lossless)]
@@ -1186,27 +1228,22 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
-fn get_registers_i(word: u32) -> RegisterInfo {
+fn get_registers_i(word: u32) -> InstructionInfo {
     let f = parse_format_i(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_i_fx(word: u32) -> RegisterInfo {
+fn get_registers_i_fx(word: u32) -> InstructionInfo {
     let f = parse_format_i_fx(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
-}
-
-struct FormatJ {
-    rd: Reg,
-    imm: i64,
 }
 
 #[allow(clippy::cast_lossless)]
@@ -1228,21 +1265,13 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     f.rd
 }
 
-fn get_registers_j(word: u32) -> RegisterInfo {
+fn get_registers_j(word: u32) -> InstructionInfo {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
-}
-
-#[derive(Debug)]
-struct FormatR {
-    rd: Reg,
-    funct3: usize,
-    rs1: Reg,
-    rs2: Reg,
 }
 
 fn parse_format_r(word: u32) -> FormatR {
@@ -1314,51 +1343,51 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
-fn get_registers_r(word: u32) -> RegisterInfo {
+fn get_registers_r(word: u32) -> InstructionInfo {
     let f = parse_format_r(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_r_xf(word: u32) -> RegisterInfo {
+fn get_registers_r_xf(word: u32) -> InstructionInfo {
     let f = parse_format_r_xf(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_r_xff(word: u32) -> RegisterInfo {
+fn get_registers_r_xff(word: u32) -> InstructionInfo {
     let f = parse_format_r_xff(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_r_fx(word: u32) -> RegisterInfo {
+fn get_registers_r_fx(word: u32) -> InstructionInfo {
     let f = parse_format_r_fx(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_r_fff(word: u32) -> RegisterInfo {
+fn get_registers_r_fff(word: u32) -> InstructionInfo {
     let f = parse_format_r_fff(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
@@ -1375,12 +1404,12 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     f.rd
 }
 
-fn get_registers_ri(word: u32) -> RegisterInfo {
+fn get_registers_ri(word: u32) -> InstructionInfo {
     let f = parse_format_r(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
@@ -1396,15 +1425,6 @@ fn dump_format_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     f.rd
-}
-
-// has rs3
-struct FormatR2 {
-    rd: Reg,
-    rm: usize,
-    rs1: Reg,
-    rs2: Reg,
-    rs3: Reg,
 }
 
 fn parse_format_r2_ffff(word: u32) -> FormatR2 {
@@ -1435,20 +1455,15 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     f.rd
 }
 
-fn get_registers_r2_ffff(word: u32) -> RegisterInfo {
+fn get_registers_r2_ffff(word: u32) -> InstructionInfo {
     let f = parse_format_r2_ffff(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
         rs3: f.rs3,
+        ..InstructionInfo::default()
     }
-}
-
-struct FormatS {
-    rs1: Reg,
-    rs2: Reg,
-    imm: i64,
 }
 
 #[allow(clippy::cast_lossless)]
@@ -1501,27 +1516,22 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
-fn get_registers_s(word: u32) -> RegisterInfo {
+fn get_registers_s(word: u32) -> InstructionInfo {
     let f = parse_format_s(word);
-    RegisterInfo {
+    InstructionInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
-fn get_registers_s_xf(word: u32) -> RegisterInfo {
+fn get_registers_s_xf(word: u32) -> InstructionInfo {
     let f = parse_format_s_xf(word);
-    RegisterInfo {
+    InstructionInfo {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
-}
-
-struct FormatU {
-    rd: Reg,
-    imm: i64,
 }
 
 #[allow(clippy::cast_lossless)]
@@ -1545,11 +1555,11 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
-fn get_registers_u(word: u32) -> RegisterInfo {
+fn get_registers_u(word: u32) -> InstructionInfo {
     let f = parse_format_u(word);
-    RegisterInfo {
+    InstructionInfo {
         rd: f.rd,
-        ..RegisterInfo::default()
+        ..InstructionInfo::default()
     }
 }
 
@@ -1572,7 +1582,7 @@ impl Cpu {
     ///
     /// Returns `Err(())` if the instruction word is illegal or cannot be
     /// decoded.
-    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<RegisterInfo> {
+    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<InstructionInfo> {
         let (insn, _) = decompress(0, insn);
         let Ok(decoded) = decode(&self.decode_dag, insn) else {
             bail!("Illegal instruction");
@@ -1581,8 +1591,6 @@ impl Cpu {
         Ok((decoded.get_registers)(insn))
     }
 }
-
-const INSTRUCTION_NUM: usize = 173;
 
 #[allow(
     clippy::cast_possible_truncation,
