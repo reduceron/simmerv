@@ -107,9 +107,9 @@ pub struct Cpu {
     // The essential CPU state
     rf: [i64; 65],
     pc: i64,
-    frm_: RoundingMode, // XXX make this accessor functions on fcsr
-    fflags_: u8,        // XXX make this accessor functions on fcsr
-    fs: u8,             // XXX This is redundant and usage is suspect
+    frm: RoundingMode, // XXX make this accessor functions on fcsr
+    fflags: u8,        // XXX make this accessor functions on fcsr
+    fs: u8,            // XXX This is redundant and usage is suspect
 
     // Supervisor and CSR
     pub cycle: u64,
@@ -175,8 +175,8 @@ impl Cpu {
 
         let mut cpu = Self {
             rf: [0; 65],
-            frm_: RoundingMode::RoundNearestEven,
-            fflags_: 0,
+            frm: RoundingMode::RoundNearestEven,
+            fflags: 0,
             fs: 1,
 
             seqno: 0,
@@ -786,36 +786,36 @@ impl Cpu {
 
     fn read_frm(&self) -> RoundingMode {
         assert_ne!(self.fs, 0);
-        self.frm_
+        self.frm
     }
 
     fn write_frm(&mut self, frm: RoundingMode) {
         assert_ne!(self.fs, 0);
         self.fs = 3;
-        self.frm_ = frm;
+        self.frm = frm;
     }
 
     fn read_fflags(&self) -> u8 {
         assert_ne!(self.fs, 0);
-        self.fflags_
+        self.fflags
     }
 
     fn write_fflags(&mut self, fflags: u8) {
         assert_ne!(self.fs, 0);
         self.fs = 3;
-        self.fflags_ = fflags & 31;
+        self.fflags = fflags & 31;
     }
 
     fn add_to_fflags(&mut self, fflags: u8) {
         assert_ne!(self.fs, 0);
         self.fs = 3;
-        self.fflags_ |= fflags & 31;
+        self.fflags |= fflags & 31;
     }
 
     #[allow(clippy::precedence)]
     fn read_fcsr(&self) -> i64 {
         assert_ne!(self.fs, 0);
-        i64::from(self.fflags_) | (self.frm_ as i64) << 5
+        i64::from(self.fflags) | (self.frm as i64) << 5
     }
 
     #[allow(clippy::cast_sign_loss)]
@@ -831,7 +831,7 @@ impl Cpu {
 
     fn get_rm(&self, insn_rm_field: usize) -> RoundingMode {
         if insn_rm_field == 7 {
-            self.frm_
+            self.frm
         } else {
             let Some(rm) = FromPrimitive::from_usize(insn_rm_field) else {
                 unreachable!();
