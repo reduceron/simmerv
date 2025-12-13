@@ -161,7 +161,11 @@ impl Cpu {
     /// Creates a new `Cpu`.
     ///
     /// # Arguments
-    /// * `Terminal`
+    /// * `Terminal` (for the UART)
+    /// * memory `capacity`
+    // XXX This is not great.  We should instead give given an MMIO object and
+    // a memory device. This file shouldn't even need to know about
+    // "terminals" and the memory object needn't be a single contigous range.
     #[must_use]
     #[allow(clippy::precedence)]
     pub fn new(terminal: Box<dyn Terminal>, capacity: usize) -> Self {
