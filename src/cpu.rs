@@ -1118,9 +1118,9 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     xd(0)
 }
 
-fn get_instruction_info_empty(_word: u32) -> Uop { Uop::default() }
+fn decode_empty(_word: u32) -> Uop { Uop::default() }
 
-fn get_instruction_info_b(word: u32) -> Uop {
+fn decode_b(word: u32) -> Uop {
     let f = parse_format_b(word);
     Uop {
         rs1: f.rs1,
@@ -1201,7 +1201,7 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
-fn get_instruction_info_csr(word: u32) -> Uop {
+fn decode_csr(word: u32) -> Uop {
     let f = parse_format_csr(word);
     Uop {
         rd: f.rd,
@@ -1211,7 +1211,7 @@ fn get_instruction_info_csr(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_csri(word: u32) -> Uop {
+fn decode_csri(word: u32) -> Uop {
     let f = parse_format_csr(word); // uimm is not a register read
     Uop {
         rd: f.rd,
@@ -1260,7 +1260,7 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
-fn get_instruction_info_i(word: u32) -> Uop {
+fn decode_i(word: u32) -> Uop {
     let f = parse_format_i(word);
     Uop {
         rd: f.rd,
@@ -1269,7 +1269,7 @@ fn get_instruction_info_i(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_i_fx(word: u32) -> Uop {
+fn decode_i_fx(word: u32) -> Uop {
     let f = parse_format_i_fx(word);
     Uop {
         rd: f.rd,
@@ -1297,7 +1297,7 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     f.rd
 }
 
-fn get_instruction_info_j(word: u32) -> Uop {
+fn decode_j(word: u32) -> Uop {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
     Uop {
@@ -1376,7 +1376,7 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
-fn get_instruction_info_r(word: u32) -> Uop {
+fn decode_r(word: u32) -> Uop {
     let f = parse_format_r(word);
     Uop {
         rd: f.rd,
@@ -1386,7 +1386,7 @@ fn get_instruction_info_r(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_r_xf(word: u32) -> Uop {
+fn decode_r_xf(word: u32) -> Uop {
     let f = parse_format_r_xf(word);
     Uop {
         rd: f.rd,
@@ -1395,7 +1395,7 @@ fn get_instruction_info_r_xf(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_r_xff(word: u32) -> Uop {
+fn decode_r_xff(word: u32) -> Uop {
     let f = parse_format_r_xff(word);
     Uop {
         rd: f.rd,
@@ -1405,7 +1405,7 @@ fn get_instruction_info_r_xff(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_r_fx(word: u32) -> Uop {
+fn decode_r_fx(word: u32) -> Uop {
     let f = parse_format_r_fx(word);
     Uop {
         rd: f.rd,
@@ -1414,7 +1414,7 @@ fn get_instruction_info_r_fx(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_r_fff(word: u32) -> Uop {
+fn decode_r_fff(word: u32) -> Uop {
     let f = parse_format_r_fff(word);
     Uop {
         rd: f.rd,
@@ -1437,7 +1437,7 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     f.rd
 }
 
-fn get_instruction_info_ri(word: u32) -> Uop {
+fn decode_ri(word: u32) -> Uop {
     let f = parse_format_r(word);
     Uop {
         rd: f.rd,
@@ -1488,7 +1488,7 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     f.rd
 }
 
-fn get_instruction_info_r2_ffff(word: u32) -> Uop {
+fn decode_r2_ffff(word: u32) -> Uop {
     let f = parse_format_r2_ffff(word);
     Uop {
         rd: f.rd,
@@ -1549,7 +1549,7 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
-fn get_instruction_info_s(word: u32) -> Uop {
+fn decode_s(word: u32) -> Uop {
     let f = parse_format_s(word);
     Uop {
         rs1: f.rs1,
@@ -1558,7 +1558,7 @@ fn get_instruction_info_s(word: u32) -> Uop {
     }
 }
 
-fn get_instruction_info_s_xf(word: u32) -> Uop {
+fn decode_s_xf(word: u32) -> Uop {
     let f = parse_format_s_xf(word);
     Uop {
         rs1: f.rs1,
@@ -1588,7 +1588,7 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
-fn get_instruction_info_u(word: u32) -> Uop {
+fn decode_u(word: u32) -> Uop {
     let f = parse_format_u(word);
     Uop {
         rd: f.rd,
@@ -1643,7 +1643,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(f.imm))
         },
         disassemble: dump_format_u,
-        decode: get_instruction_info_u,
+        decode: decode_u,
     },
     RVInsnSpec {
         name: "AUIPC",
@@ -1654,7 +1654,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(address.wrapping_add(f.imm)))
         },
         disassemble: dump_format_u,
-        decode: get_instruction_info_u,
+        decode: decode_u,
     },
     RVInsnSpec {
         name: "JAL",
@@ -1667,7 +1667,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_j,
-        decode: get_instruction_info_j,
+        decode: decode_j,
     },
     RVInsnSpec {
         name: "JALR",
@@ -1689,7 +1689,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             *s += ")";
             f.rd
         },
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "BEQ",
@@ -1703,7 +1703,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "BNE",
@@ -1717,7 +1717,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "BLT",
@@ -1731,7 +1731,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "BGE",
@@ -1745,7 +1745,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "BLTU",
@@ -1759,7 +1759,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "BGEU",
@@ -1773,7 +1773,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        decode: get_instruction_info_b,
+        decode: decode_b,
     },
     RVInsnSpec {
         name: "LB",
@@ -1785,7 +1785,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "LH",
@@ -1797,7 +1797,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "LW",
@@ -1809,7 +1809,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v as i32 as i64))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "LBU",
@@ -1821,7 +1821,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "LHU",
@@ -1833,7 +1833,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "SB",
@@ -1845,7 +1845,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s,
+        decode: decode_s,
     },
     RVInsnSpec {
         name: "SH",
@@ -1857,7 +1857,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s,
+        decode: decode_s,
     },
     RVInsnSpec {
         name: "SW",
@@ -1869,7 +1869,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s,
+        decode: decode_s,
     },
     RVInsnSpec {
         name: "ADDI",
@@ -1880,7 +1880,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1.wrapping_add(f.imm)))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "SLTI",
@@ -1891,7 +1891,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1 < f.imm)))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "SLTIU",
@@ -1902,7 +1902,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as u64) < (f.imm as u64))))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "XORI",
@@ -1913,7 +1913,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 ^ f.imm))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "ORI",
@@ -1924,7 +1924,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 | f.imm))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "ANDI",
@@ -1935,7 +1935,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1 & f.imm))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     // RV32I SLLI subsumed by RV64I
     // RV32I SRLI subsumed by RV64I
@@ -1946,7 +1946,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_add(ops.s2))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SUB",
@@ -1954,7 +1954,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x40000033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_sub(ops.s2))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SLL",
@@ -1962,7 +1962,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shl(ops.s2 as u32))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SLT",
@@ -1970,7 +1970,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002033,
         execute: |_cpu, _address, _word, ops| Ok(Some(i64::from(ops.s1 < ops.s2))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SLTU",
@@ -1980,7 +1980,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as u64) < (ops.s2 as u64))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "XOR",
@@ -1988,7 +1988,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00004033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 ^ ops.s2)),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SRL",
@@ -1998,7 +1998,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(((ops.s1 as u64).wrapping_shr(ops.s2 as u32)) as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SRA",
@@ -2006,7 +2006,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x40005033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shr(ops.s2 as u32))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "OR",
@@ -2014,7 +2014,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 | ops.s2)),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AND",
@@ -2022,7 +2022,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 & ops.s2)),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "FENCE",
@@ -2114,7 +2114,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "LD",
@@ -2126,7 +2126,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "SD",
@@ -2138,7 +2138,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s,
+        decode: decode_s,
     },
     RVInsnSpec {
         name: "SLLI",
@@ -2146,7 +2146,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001013,
         execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 << ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "SRLI",
@@ -2156,7 +2156,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(((ops.s1 as u64) >> ((word >> 20) & 0x3f)) as i64))
         },
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "SRAI",
@@ -2164,7 +2164,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x40005013,
         execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 >> ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "ADDIW",
@@ -2175,7 +2175,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_add(f.imm) as i32)))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i,
+        decode: decode_i,
     },
     RVInsnSpec {
         name: "SLLIW",
@@ -2186,7 +2186,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 << f.rs2.get()) as i32)))
         },
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "SRLIW",
@@ -2198,7 +2198,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "SRAIW",
@@ -2208,7 +2208,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as i32) >> ((word >> 20) & 0x1f))))
         },
         disassemble: dump_format_ri,
-        decode: get_instruction_info_ri,
+        decode: decode_ri,
     },
     RVInsnSpec {
         name: "ADDW",
@@ -2218,7 +2218,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_add(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SUBW",
@@ -2228,7 +2228,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(ops.s1.wrapping_sub(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SLLW",
@@ -2240,7 +2240,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SRLW",
@@ -2252,7 +2252,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SRAW",
@@ -2262,7 +2262,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from((ops.s1 as i32).wrapping_shr(ops.s2 as u32))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // RV32/RV64 Zifencei
     RVInsnSpec {
@@ -2275,7 +2275,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        decode: get_instruction_info_empty,
+        decode: decode_empty,
     },
     // RV32/RV64 Zicsr
     RVInsnSpec {
@@ -2296,7 +2296,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csr,
-        decode: get_instruction_info_csr,
+        decode: decode_csr,
     },
     RVInsnSpec {
         name: "CSRRS",
@@ -2311,7 +2311,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        decode: get_instruction_info_csr,
+        decode: decode_csr,
     },
     RVInsnSpec {
         name: "CSRRC",
@@ -2326,7 +2326,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        decode: get_instruction_info_csr,
+        decode: decode_csr,
     },
     RVInsnSpec {
         name: "CSRRWI",
@@ -2347,7 +2347,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csri,
-        decode: get_instruction_info_csri,
+        decode: decode_csri,
     },
     RVInsnSpec {
         name: "CSRRSI",
@@ -2362,7 +2362,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        decode: get_instruction_info_csri,
+        decode: decode_csri,
     },
     RVInsnSpec {
         name: "CSRRCI",
@@ -2377,7 +2377,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        decode: get_instruction_info_csri,
+        decode: decode_csri,
     },
     // RV32M
     RVInsnSpec {
@@ -2386,7 +2386,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02000033,
         execute: |_cpu, _address, _word, values| Ok(Some(values.s1.wrapping_mul(values.s2))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "MULH",
@@ -2398,7 +2398,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "MULHSU",
@@ -2410,7 +2410,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "MULHU",
@@ -2423,7 +2423,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             ))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "DIV",
@@ -2439,7 +2439,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "DIVU",
@@ -2453,7 +2453,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "REM",
@@ -2469,7 +2469,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "REMU",
@@ -2482,7 +2482,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // RV64M
     RVInsnSpec {
@@ -2495,7 +2495,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "DIVW",
@@ -2511,7 +2511,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "DIVUW",
@@ -2525,7 +2525,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "REMW",
@@ -2541,7 +2541,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "REMUW",
@@ -2554,7 +2554,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // RV32A
     RVInsnSpec {
@@ -2570,7 +2570,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(data)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SC.W",
@@ -2590,7 +2590,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOSWAP.W",
@@ -2602,7 +2602,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOADD.W",
@@ -2615,7 +2615,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOXOR.W",
@@ -2628,7 +2628,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOAND.W",
@@ -2641,7 +2641,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOOR.W",
@@ -2654,7 +2654,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMIN.W",
@@ -2667,7 +2667,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMAX.W",
@@ -2680,7 +2680,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMINU.W",
@@ -2693,7 +2693,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMAXU.W",
@@ -2706,7 +2706,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // RV64A
     RVInsnSpec {
@@ -2722,7 +2722,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(data as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SC.D",
@@ -2742,7 +2742,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOSWAP.D",
@@ -2755,7 +2755,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOADD.D",
@@ -2769,7 +2769,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOXOR.D",
@@ -2783,7 +2783,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOAND.D",
@@ -2797,7 +2797,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOOR.D",
@@ -2811,7 +2811,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMIN.D",
@@ -2825,7 +2825,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMAX.D",
@@ -2839,7 +2839,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMINU.D",
@@ -2853,7 +2853,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "AMOMAXU.D",
@@ -2867,7 +2867,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // RV32F
     RVInsnSpec {
@@ -2881,7 +2881,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v | fp::NAN_BOX_F32))
         },
         disassemble: dump_format_i_mem,
-        decode: get_instruction_info_i_fx,
+        decode: decode_i_fx,
     },
     RVInsnSpec {
         name: "FSW",
@@ -2896,7 +2896,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s_xf,
+        decode: decode_s_xf,
     },
     RVInsnSpec {
         name: "FMADD.S",
@@ -2911,7 +2911,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FMSUB.S",
@@ -2925,7 +2925,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FNMSUB.S",
@@ -2939,7 +2939,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FNMADD.S",
@@ -2953,7 +2953,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FADD.S",
@@ -2965,7 +2965,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) + op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSUB.S",
@@ -2977,7 +2977,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) - op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMUL.S",
@@ -2990,7 +2990,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1) * op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FDIV.S",
@@ -3010,7 +3010,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSQRT.S",
@@ -3022,7 +3022,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f32(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJ.S",
@@ -3037,7 +3037,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJN.S",
@@ -3052,7 +3052,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJX.S",
@@ -3067,7 +3067,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMIN.S",
@@ -3079,7 +3079,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMAX.S",
@@ -3091,7 +3091,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FCVT.W.S",
@@ -3103,7 +3103,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f32(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.WU.S",
@@ -3115,7 +3115,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f32(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FMV.X.W",
@@ -3127,7 +3127,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(cpu.read_f(f.rs1) as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FEQ.S",
@@ -3141,7 +3141,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FLT.S",
@@ -3155,7 +3155,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FLE.S",
@@ -3169,7 +3169,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FCLASS.S",
@@ -3181,7 +3181,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.S.W",
@@ -3195,7 +3195,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FCVT.S.WU",
@@ -3209,7 +3209,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FMV.W.X",
@@ -3221,7 +3221,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | ops.s1))
         },
         disassemble: dump_format_r_f,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     // RV64F
     RVInsnSpec {
@@ -3234,7 +3234,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f32(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.LU.S",
@@ -3246,7 +3246,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f32(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.S.L",
@@ -3260,7 +3260,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FCVT.S.LU",
@@ -3275,7 +3275,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     // RV32D
     RVInsnSpec {
@@ -3289,7 +3289,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_i,
-        decode: get_instruction_info_i_fx,
+        decode: decode_i_fx,
     },
     RVInsnSpec {
         name: "FSD",
@@ -3302,7 +3302,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        decode: get_instruction_info_s_xf,
+        decode: decode_s_xf,
     },
     RVInsnSpec {
         name: "FMADD.D",
@@ -3316,7 +3316,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FMSUB.D",
@@ -3330,7 +3330,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FNMSUB.D",
@@ -3346,7 +3346,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FNMADD.D",
@@ -3362,7 +3362,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        decode: get_instruction_info_r2_ffff,
+        decode: decode_r2_ffff,
     },
     RVInsnSpec {
         name: "FADD.D",
@@ -3374,7 +3374,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) + op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSUB.D",
@@ -3386,7 +3386,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) - op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMUL.D",
@@ -3399,7 +3399,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1) * op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FDIV.D",
@@ -3420,7 +3420,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSQRT.D",
@@ -3432,7 +3432,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(op_to_f64(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJ.D",
@@ -3447,7 +3447,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJN.D",
@@ -3462,7 +3462,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FSGNJX.D",
@@ -3477,7 +3477,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit ^ rs1_bits))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMIN.D",
@@ -3489,7 +3489,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FMAX.D",
@@ -3501,7 +3501,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FCVT.S.D",
@@ -3513,7 +3513,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f32(op_to_f64(ops.s1) as f32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FCVT.D.S",
@@ -3527,7 +3527,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fff,
+        decode: decode_r_fff,
     },
     RVInsnSpec {
         name: "FEQ.D",
@@ -3542,7 +3542,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_empty,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FLT.D",
@@ -3556,7 +3556,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FLE.D",
@@ -3570,7 +3570,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xff,
+        decode: decode_r_xff,
     },
     RVInsnSpec {
         name: "FCLASS.D",
@@ -3582,7 +3582,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.W.D",
@@ -3594,7 +3594,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f64(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.WU.D",
@@ -3606,7 +3606,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(op_to_f64(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.D.W",
@@ -3618,7 +3618,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(f64::from(ops.s1 as i32))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FCVT.D.WU",
@@ -3630,7 +3630,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(f64::from(ops.s1 as u32))))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     // RV64D
     RVInsnSpec {
@@ -3643,7 +3643,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f64(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.LU.D",
@@ -3655,7 +3655,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_to_f64(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FMV.X.D",
@@ -3667,7 +3667,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(cpu.read_f(f.rs1)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_xf,
+        decode: decode_r_xf,
     },
     RVInsnSpec {
         name: "FCVT.D.L",
@@ -3679,7 +3679,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(ops.s1 as f64)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FCVT.D.LU",
@@ -3691,7 +3691,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(op_from_f64(ops.s1 as u64 as f64)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     RVInsnSpec {
         name: "FMV.D.X",
@@ -3702,7 +3702,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s1))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r_fx,
+        decode: decode_r_fx,
     },
     // Remaining (all system-level) that weren't listed in the instr-table
     RVInsnSpec {
@@ -3849,7 +3849,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0800003b,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 & 0xffffffff))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH1ADD",
@@ -3857,7 +3857,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20002033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 1))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH1ADD.UW",
@@ -3867,7 +3867,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 1)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH2ADD",
@@ -3875,7 +3875,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20004033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 2))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH2ADD.UW",
@@ -3885,7 +3885,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 2)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH3ADD",
@@ -3893,7 +3893,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20006033,
         execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 3))),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SH3ADD.UW",
@@ -3903,7 +3903,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 3)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "SLLI.UW",
@@ -3913,7 +3913,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             Ok(Some((ops.s1 & 0xffffffff) << ((word >> 20) & 0x3f)))
         },
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // Zicond extension
     RVInsnSpec {
@@ -3922,7 +3922,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0e005033,
         execute: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 == 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     RVInsnSpec {
         name: "CZERO.NEZ",
@@ -3930,7 +3930,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0e007033,
         execute: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 != 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        decode: get_instruction_info_r,
+        decode: decode_r,
     },
     // Last one is a sentiel and must always be this illegal instruction
     RVInsnSpec {
