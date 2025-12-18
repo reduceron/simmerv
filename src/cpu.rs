@@ -37,7 +37,7 @@ pub type Reg = Bounded<65>;
 
 /// Holds information about registers used by an instruction.
 #[derive(Debug, PartialEq, Eq)]
-pub struct InstructionInfo {
+pub struct Uop {
     /// Destination Register
     pub rd: Reg,
     /// Source Register 1
@@ -64,13 +64,35 @@ pub struct Operands {
 }
 
 /// Emulates a RISC-V CPU core
+// XXX This structure should be rethought and refactored:
+// - there is architectural state (essentially everything up-to and incl.
+//   reservation), but mmu.prv is definitely architectural (but pc and rf are
+//   special)
+// - wfi, seqno, insn_addr, insn, and decode_dag are artifacts of the VM
+//
+// Some instructions need no CPU state (except for registers of course)
+// Some instructions needs to known instruction address
+// Some instructions can [optionally] change the program flow
+// Some instructions can raise exceptions
+// Some instructions need to read/modify FCSR/FS
+// Some instructions needs to read/modify CSRs
+// All instructions [potentially] depends of the MMU
+// Load/Store/Atomic depends on the MMU (and ?)
+//
+// How should we model this? Some random ideas:
+// - We could partition the instruction set into classes (multisim used alu,
+//   load, store, jump, branch, compjump, atomic) along with a "system" boolean.
+//   Each class could have it's own operation
+//
 pub struct Cpu {
     // The essential CPU state
     rf: [i64; 65],
     pc: i64,
-    frm: RoundingMode, // XXX make this accessor functions on fcsr
-    fflags: u8,        // XXX make this accessor functions on fcsr
-    fs: u8,            // XXX This is redundant and usage is suspect
+
+    // This is fcsr disaggregated
+    frm: RoundingMode,
+    fflags: u8,
+    fs: u8,
 
     // Supervisor and CSR
     pub cycle: u64,
@@ -80,14 +102,16 @@ pub struct Cpu {
     // Wait-For-Interrupt; relax and await further instruction
     wfi: bool,
 
-    // Important for sanity: uniquely name each executed insn
-    // You can derive instret from this except sane people
-    // could consider ECALL and EBREAK as committing.
+    // Giving each instruction a unique sequence number in program order is
+    // especially helpful when dealing with out-of-order execution.
+    // We can derive instret by maintaining an offset from seqno (as minstret
+    // can be written by programs), although we cannot then treat ECALL and
+    // EBREAK as committing instructions.œ
     pub seqno: usize,
 
-    // This is used for reporting exceptions
+    // This is used for reporting exceptions (XXX THIS SHOULD NOT BE HERE)
     pub insn_addr: i64,
-    pub insn: u32,
+    pub insn: u32, // XXX THIS SHOULD NOT BE HERE
 
     // Holds all memory and devices (XXX: this public mmu suggests we need to rethink the API)
     pub mmu: Mmu,
@@ -102,16 +126,20 @@ pub struct Exception {
     pub tval: i64,
 }
 
+// XXX Rename as RISCVInstructionSpec
+// and reorder as name, mask, bits, decode, disassemble, execute
+// XXX do we need an execute_s for serialized execution (all the non-trivial
+// instructions)?
 #[allow(clippy::type_complexity)]
 #[derive(Debug)]
-struct Instruction {
+struct RVInsnSpec {
     mask: u32,
     bits: u32,
     name: &'static str,
-    operation:
+    execute:
         fn(cpu: &mut Cpu, address: i64, word: u32, ops: Operands) -> Result<Option<i64>, Exception>,
     disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
-    get_instruction_info: fn(word: u32) -> InstructionInfo,
+    decode: fn(word: u32) -> Uop, /* XXX may want to give it an address as well. */
 }
 
 struct FormatB {
@@ -176,7 +204,7 @@ impl Reg {
     pub const fn is_x0_dest(self) -> bool { self.get() == 64 }
 }
 
-impl Default for InstructionInfo {
+impl Default for Uop {
     fn default() -> Self {
         Self {
             rd: NODESTREG,
@@ -336,13 +364,13 @@ impl Cpu {
         };
 
         self.pc = npc;
-        let reg_info = (decoded.get_instruction_info)(insn);
+        let reg_info = (decoded.decode)(insn);
         let values = Operands {
             s1: self.read_x(reg_info.rs1),
             s2: self.read_x(reg_info.rs2),
             s3: self.read_x(reg_info.rs3),
         };
-        if let Some(res) = (decoded.operation)(self, self.insn_addr, insn, values)? {
+        if let Some(res) = (decoded.execute)(self, self.insn_addr, insn, values)? {
             self.write_x(reg_info.rd, res);
         } else {
             assert_eq!(reg_info.rd.get(), 64);
@@ -1023,7 +1051,7 @@ const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
     }
 }
 
-const fn decode(fdt: &[u16], word: u32) -> Result<&Instruction, ()> {
+const fn decode(fdt: &[u16], word: u32) -> Result<&RVInsnSpec, ()> {
     let inst = &INSTRUCTIONS[dag_decoder::patmatch(fdt, word)];
     if word & inst.mask == inst.bits {
         Ok(inst)
@@ -1089,15 +1117,15 @@ fn dump_format_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     xd(0)
 }
 
-fn get_instruction_info_empty(_word: u32) -> InstructionInfo { InstructionInfo::default() }
+fn get_instruction_info_empty(_word: u32) -> Uop { Uop::default() }
 
-fn get_instruction_info_b(word: u32) -> InstructionInfo {
+fn get_instruction_info_b(word: u32) -> Uop {
     let f = parse_format_b(word);
-    InstructionInfo {
+    Uop {
         rs1: f.rs1,
         rs2: f.rs2,
         ctf: true,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1172,22 +1200,22 @@ fn dump_format_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     f.rd
 }
 
-fn get_instruction_info_csr(word: u32) -> InstructionInfo {
+fn get_instruction_info_csr(word: u32) -> Uop {
     let f = parse_format_csr(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
         serialize: true,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_csri(word: u32) -> InstructionInfo {
+fn get_instruction_info_csri(word: u32) -> Uop {
     let f = parse_format_csr(word); // uimm is not a register read
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         serialize: true,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1231,21 +1259,21 @@ fn dump_format_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     f.rd
 }
 
-fn get_instruction_info_i(word: u32) -> InstructionInfo {
+fn get_instruction_info_i(word: u32) -> Uop {
     let f = parse_format_i(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_i_fx(word: u32) -> InstructionInfo {
+fn get_instruction_info_i_fx(word: u32) -> Uop {
     let f = parse_format_i_fx(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1268,13 +1296,13 @@ fn dump_format_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     f.rd
 }
 
-fn get_instruction_info_j(word: u32) -> InstructionInfo {
+fn get_instruction_info_j(word: u32) -> Uop {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         ctf: true,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1347,51 +1375,51 @@ fn dump_format_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     f.rd
 }
 
-fn get_instruction_info_r(word: u32) -> InstructionInfo {
+fn get_instruction_info_r(word: u32) -> Uop {
     let f = parse_format_r(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_r_xf(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_xf(word: u32) -> Uop {
     let f = parse_format_r_xf(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_r_xff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_xff(word: u32) -> Uop {
     let f = parse_format_r_xff(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_r_fx(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_fx(word: u32) -> Uop {
     let f = parse_format_r_fx(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_r_fff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r_fff(word: u32) -> Uop {
     let f = parse_format_r_fff(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1408,12 +1436,12 @@ fn dump_format_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     f.rd
 }
 
-fn get_instruction_info_ri(word: u32) -> InstructionInfo {
+fn get_instruction_info_ri(word: u32) -> Uop {
     let f = parse_format_r(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1459,14 +1487,14 @@ fn dump_format_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     f.rd
 }
 
-fn get_instruction_info_r2_ffff(word: u32) -> InstructionInfo {
+fn get_instruction_info_r2_ffff(word: u32) -> Uop {
     let f = parse_format_r2_ffff(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
         rs3: f.rs3,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1520,21 +1548,21 @@ fn dump_format_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     xd(0)
 }
 
-fn get_instruction_info_s(word: u32) -> InstructionInfo {
+fn get_instruction_info_s(word: u32) -> Uop {
     let f = parse_format_s(word);
-    InstructionInfo {
+    Uop {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
-fn get_instruction_info_s_xf(word: u32) -> InstructionInfo {
+fn get_instruction_info_s_xf(word: u32) -> Uop {
     let f = parse_format_s_xf(word);
-    InstructionInfo {
+    Uop {
         rs1: f.rs1,
         rs2: f.rs2,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1559,11 +1587,11 @@ fn dump_empty(_s: &mut String, _cpu: &Cpu, _address: i64, _word: u32, _evaluate:
     xd(0)
 }
 
-fn get_instruction_info_u(word: u32) -> InstructionInfo {
+fn get_instruction_info_u(word: u32) -> Uop {
     let f = parse_format_u(word);
-    InstructionInfo {
+    Uop {
         rd: f.rd,
-        ..InstructionInfo::default()
+        ..Uop::default()
     }
 }
 
@@ -1586,13 +1614,13 @@ impl Cpu {
     ///
     /// Returns `Err(())` if the instruction word is illegal or cannot be
     /// decoded.
-    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<InstructionInfo> {
+    pub fn get_register_info(&self, insn: u32) -> anyhow::Result<Uop> {
         let (insn, _) = decompress(0, insn);
         let Ok(decoded) = decode(&self.decode_dag, insn) else {
             bail!("Illegal instruction");
         };
 
-        Ok((decoded.get_instruction_info)(insn))
+        Ok((decoded.decode)(insn))
     }
 }
 
@@ -1603,48 +1631,48 @@ impl Cpu {
     clippy::float_cmp,
     clippy::cast_lossless
 )]
-const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
+const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
     // RV32I
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000007f,
         bits: 0x00000037,
         name: "LUI",
-        operation: |_cpu, _address, word, _ops| {
+        execute: |_cpu, _address, word, _ops| {
             let f = parse_format_u(word);
             Ok(Some(f.imm))
         },
         disassemble: dump_format_u,
-        get_instruction_info: get_instruction_info_u,
+        decode: get_instruction_info_u,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000007f,
         bits: 0x00000017,
         name: "AUIPC",
-        operation: |_cpu, address, word, _ops| {
+        execute: |_cpu, address, word, _ops| {
             let f = parse_format_u(word);
             Ok(Some(address.wrapping_add(f.imm)))
         },
         disassemble: dump_format_u,
-        get_instruction_info: get_instruction_info_u,
+        decode: get_instruction_info_u,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000007f,
         bits: 0x0000006f,
         name: "JAL",
-        operation: |cpu, address, word, _ops| {
+        execute: |cpu, address, word, _ops| {
             let f = parse_format_j(word);
             let tmp = cpu.pc;
             cpu.pc = address.wrapping_add(f.imm);
             Ok(Some(tmp))
         },
         disassemble: dump_format_j,
-        get_instruction_info: get_instruction_info_j,
+        decode: get_instruction_info_j,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00000067,
         name: "JALR",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let tmp = cpu.pc;
             cpu.pc = ops.s1.wrapping_add(f.imm) & !1;
@@ -1660,13 +1688,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             *s += ")";
             f.rd
         },
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00000063,
         name: "BEQ",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if ops.s1 == ops.s2 {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1674,13 +1702,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00001063,
         name: "BNE",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if ops.s1 != ops.s2 {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1688,13 +1716,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00004063,
         name: "BLT",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if ops.s1 < ops.s2 {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1702,13 +1730,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00005063,
         name: "BGE",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if ops.s1 >= ops.s2 {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1716,13 +1744,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00006063,
         name: "BLTU",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if (ops.s1 as u64) < (ops.s2 as u64) {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1730,13 +1758,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00007063,
         name: "BGEU",
-        operation: |cpu, address, word, ops| {
+        execute: |cpu, address, word, ops| {
             let f = parse_format_b(word);
             if (ops.s1 as u64) >= (ops.s2 as u64) {
                 cpu.pc = address.wrapping_add(f.imm);
@@ -1744,262 +1772,262 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_b,
-        get_instruction_info: get_instruction_info_b,
+        decode: get_instruction_info_b,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00000003,
         name: "LB",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 1)? as i8 as i64;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00001003,
         name: "LH",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 2)? as i16 as i64;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002003,
         name: "LW",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
             Ok(Some(v as i32 as i64))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00004003,
         name: "LBU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 1)?;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00005003,
         name: "LHU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 2)?;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00000023,
         name: "SB",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s(word);
             let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 1)?;
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s,
+        decode: get_instruction_info_s,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00001023,
         name: "SH",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s(word);
             let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 2)?;
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s,
+        decode: get_instruction_info_s,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002023,
         name: "SW",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s(word);
             let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 4)?;
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s,
+        decode: get_instruction_info_s,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00000013,
         name: "ADDI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(ops.s1.wrapping_add(f.imm)))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002013,
         name: "SLTI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(i64::from(ops.s1 < f.imm)))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003013,
         name: "SLTIU",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(i64::from((ops.s1 as u64) < (f.imm as u64))))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00004013,
         name: "XORI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(ops.s1 ^ f.imm))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00006013,
         name: "ORI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(ops.s1 | f.imm))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00007013,
         name: "ANDI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(ops.s1 & f.imm))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
     // RV32I SLLI subsumed by RV64I
     // RV32I SRLI subsumed by RV64I
     // RV32I SRAI subsumed by RV64I
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00000033,
         name: "ADD",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_add(ops.s2))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_add(ops.s2))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x40000033,
         name: "SUB",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_sub(ops.s2))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_sub(ops.s2))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00001033,
         name: "SLL",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shl(ops.s2 as u32))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shl(ops.s2 as u32))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00002033,
         name: "SLT",
-        operation: |_cpu, _address, _word, ops| Ok(Some(i64::from(ops.s1 < ops.s2))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(i64::from(ops.s1 < ops.s2))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00003033,
         name: "SLTU",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from((ops.s1 as u64) < (ops.s2 as u64))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00004033,
         name: "XOR",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 ^ ops.s2)),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 ^ ops.s2)),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00005033,
         name: "SRL",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(((ops.s1 as u64).wrapping_shr(ops.s2 as u32)) as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x40005033,
         name: "SRA",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shr(ops.s2 as u32))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_shr(ops.s2 as u32))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00006033,
         name: "OR",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 | ops.s2)),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 | ops.s2)),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x00007033,
         name: "AND",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s1 & ops.s2)),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1 & ops.s2)),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf000707f,
         bits: 0x0000000f,
         name: "FENCE",
-        operation: |_cpu, _address, word, _ops| {
+        execute: |_cpu, _address, word, _ops| {
             if word == 0x0100000f {
                 // PAUSE instruction hint
                 // Nothing to do here, but it would be interesting to see
@@ -2010,34 +2038,34 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             serialize: true,
             ctf: false,
             exceptional: false,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf000707f,
         bits: 0x8000000f,
         name: "FENCE.TSO",
-        operation: |_cpu, _address, _word, _ops| {
+        execute: |_cpu, _address, _word, _ops| {
             // Fence memory ops (we are currently TSO already)
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             serialize: true,
             ctf: false,
             exceptional: false,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x00000073,
         name: "ECALL",
-        operation: |cpu, address, _word, _ops| {
+        execute: |cpu, address, _word, _ops| {
             let trap_type = match cpu.mmu.prv {
                 PrivMode::U => Trap::EnvironmentCallFromUMode,
                 PrivMode::S => Trap::EnvironmentCallFromSMode,
@@ -2049,211 +2077,211 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             exceptional: true,
             ctf: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x00100073,
         name: "EBREAK",
-        operation: |_cpu, _address, _word, _ops| {
+        execute: |_cpu, _address, _word, _ops| {
             Err(Exception {
                 trap: Trap::Breakpoint,
                 tval: 0x00100073,
             })
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             exceptional: true,
             ctf: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
     // RV64I
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00006003,
         name: "LWU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003003,
         name: "LD",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i(word);
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 8)?;
             Ok(Some(v))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003023,
         name: "SD",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s(word);
             let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 8)?;
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s,
+        decode: get_instruction_info_s,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfc00707f, // RV64I version!
         bits: 0x00001013,
         name: "SLLI",
-        operation: |_cpu, _address, word, ops| Ok(Some(ops.s1 << ((word >> 20) & 0x3f))),
+        execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 << ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfc00707f,
         bits: 0x00005013,
         name: "SRLI",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             Ok(Some(((ops.s1 as u64) >> ((word >> 20) & 0x3f)) as i64))
         },
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfc00707f,
         bits: 0x40005013,
         name: "SRAI",
-        operation: |_cpu, _address, word, ops| Ok(Some(ops.s1 >> ((word >> 20) & 0x3f))),
+        execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 >> ((word >> 20) & 0x3f))),
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x0000001b,
         name: "ADDIW",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_i(word);
             Ok(Some(i64::from(ops.s1.wrapping_add(f.imm) as i32)))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i,
+        decode: get_instruction_info_i,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0000101b,
         name: "SLLIW",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             let f = parse_format_r(word);
             Ok(Some(i64::from((ops.s1 << f.rs2.get()) as i32)))
         },
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0000501b,
         name: "SRLIW",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             Ok(Some(i64::from(
                 ((ops.s1 as u32) >> ((word >> 20) & 0x1f)) as i32,
             )))
         },
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x4000501b,
         name: "SRAIW",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             Ok(Some(i64::from((ops.s1 as i32) >> ((word >> 20) & 0x1f))))
         },
         disassemble: dump_format_ri,
-        get_instruction_info: get_instruction_info_ri,
+        decode: get_instruction_info_ri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0000003b,
         name: "ADDW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from(ops.s1.wrapping_add(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x4000003b,
         name: "SUBW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from(ops.s1.wrapping_sub(ops.s2) as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0000103b,
         name: "SLLW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from(
                 (ops.s1 as u32).wrapping_shl(ops.s2 as u32) as i32
             )))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0000503b,
         name: "SRLW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from(
                 (ops.s1 as u32).wrapping_shr(ops.s2 as u32) as i32
             )))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x4000503b,
         name: "SRAW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(i64::from((ops.s1 as i32).wrapping_shr(ops.s2 as u32))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // RV32/RV64 Zifencei
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x0000100f,
         name: "FENCE.I",
-        operation: |cpu, _address, _word, _values| {
+        execute: |cpu, _address, _word, _values| {
             // Flush any cached instructions.  We have none so far.
             cpu.reservation = None;
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: get_instruction_info_empty,
+        decode: get_instruction_info_empty,
     },
     // RV32/RV64 Zicsr
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00001073,
         name: "CSRRW",
-        operation: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let res = if f.rd.is_x0_dest() {
                 cpu.write_csr(f.csr, values.s1 as u64)?;
@@ -2267,13 +2295,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csr,
-        get_instruction_info: get_instruction_info_csr,
+        decode: get_instruction_info_csr,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002073,
         name: "CSRRS",
-        operation: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
@@ -2282,13 +2310,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        get_instruction_info: get_instruction_info_csr,
+        decode: get_instruction_info_csr,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003073,
         name: "CSRRC",
-        operation: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
@@ -2297,13 +2325,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csr,
-        get_instruction_info: get_instruction_info_csr,
+        decode: get_instruction_info_csr,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00005073,
         name: "CSRRWI",
-        operation: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
 
             let res = if f.rd.is_x0_dest() {
@@ -2318,13 +2346,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_csri,
-        get_instruction_info: get_instruction_info_csri,
+        decode: get_instruction_info_csri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00006073,
         name: "CSRRSI",
-        operation: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
@@ -2333,13 +2361,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        get_instruction_info: get_instruction_info_csri,
+        decode: get_instruction_info_csri,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00007073,
         name: "CSRRCI",
-        operation: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
@@ -2348,59 +2376,59 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data))
         },
         disassemble: dump_format_csri,
-        get_instruction_info: get_instruction_info_csri,
+        decode: get_instruction_info_csri,
     },
     // RV32M
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02000033,
         name: "MUL",
-        operation: |_cpu, _address, _word, values| Ok(Some(values.s1.wrapping_mul(values.s2))),
+        execute: |_cpu, _address, _word, values| Ok(Some(values.s1.wrapping_mul(values.s2))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02001033,
         name: "MULH",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(
                 ((i128::from(values.s1) * i128::from(values.s2)) >> 64) as i64,
             ))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02002033,
         name: "MULHSU",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(
                 ((values.s1 as u128).wrapping_mul(u128::from(values.s2 as u64)) >> 64) as i64,
             ))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02003033,
         name: "MULHU",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(
                 (u128::from(values.s1 as u64).wrapping_mul(u128::from(values.s2 as u64)) >> 64)
                     as i64,
             ))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02004033,
         name: "DIV",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 == 0 {
                 -1
             } else if values.s1 == i64::MIN && values.s2 == -1 {
@@ -2410,13 +2438,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02005033,
         name: "DIVU",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 as u64 == 0 {
                 -1
             } else {
@@ -2424,13 +2452,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02006033,
         name: "REM",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 == 0 {
                 values.s1
             } else if values.s1 == i64::MIN && values.s2 == -1 {
@@ -2440,39 +2468,39 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x02007033,
         name: "REMU",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(match values.s2 as u64 {
                 0 => values.s1 as u64 as i64,
                 _ => (values.s1 as u64).wrapping_rem(values.s2 as u64) as i64,
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // RV64M
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0200003b,
         name: "MULW",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(i64::from(
                 (values.s1 as i32).wrapping_mul(values.s2 as i32),
             )))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0200403b,
         name: "DIVW",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 as i32 == 0 {
                 -1
             } else if values.s1 as i32 == i32::MIN && values.s2 as i32 == -1 {
@@ -2482,13 +2510,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0200503b,
         name: "DIVUW",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 as u32 == 0 {
                 -1
             } else {
@@ -2496,13 +2524,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0200603b,
         name: "REMW",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(if values.s2 as i32 == 0 {
                 i64::from(values.s1 as i32)
             } else if values.s1 as i32 == i32::MIN && values.s2 as i32 == -1 {
@@ -2512,27 +2540,27 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0200703b,
         name: "REMUW",
-        operation: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, values| {
             Ok(Some(match values.s2 as u32 {
                 0 => i64::from(values.s1 as u32 as i32),
                 _ => i64::from((values.s1 as u32).wrapping_rem(values.s2 as u32) as i32),
             }))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // RV32A
-    Instruction {
+    RVInsnSpec {
         mask: 0xf9f0707f,
         bits: 0x1000202f,
         name: "LR.W",
-        operation: |cpu, _address, _word, values| {
+        execute: |cpu, _address, _word, values| {
             let data = cpu.mmu.load_virt_u32(values.s1 as u64)? as i32;
             let pa = cpu
                 .mmu
@@ -2541,13 +2569,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(data)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x1800202f,
         name: "SC.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let pa = cpu
                 .mmu
                 .translate_address(ops.s1 as u64, MemoryAccessType::Write, false)?;
@@ -2561,130 +2589,130 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x0800202f,
         name: "AMOSWAP.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = i64::from(cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32);
             cpu.mmu.store_virt_u32(ops.s1 as u64, ops.s2 as u32)?;
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x0000202f,
         name: "AMOADD.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u32(ops.s1 as u64, tmp.wrapping_add(ops.s2 as u32))?;
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x2000202f,
         name: "AMOXOR.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u32(ops.s1 as u64, (ops.s2 as u32) ^ tmp)?;
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x6000202f,
         name: "AMOAND.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = i64::from(cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32);
             cpu.mmu
                 .store_virt_u32(ops.s1 as u64, (ops.s2 & tmp) as u32)?;
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x4000202f,
         name: "AMOOR.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = i64::from(cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32);
             cpu.mmu
                 .store_virt_u32(ops.s1 as u64, (ops.s2 | tmp) as u32)?;
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x8000202f,
         name: "AMOMIN.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32;
             let val = ops.s2 as i32;
             cpu.mmu.store_virt_u32(ops.s1 as u64, val.min(tmp) as u32)?;
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xa000202f,
         name: "AMOMAX.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32;
             let val = ops.s2 as i32;
             cpu.mmu.store_virt_u32(ops.s1 as u64, val.max(tmp) as u32)?;
             Ok(Some(i64::from(tmp)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xc000202f,
         name: "AMOMINU.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)?;
             let val = ops.s2 as u32;
             cpu.mmu.store_virt_u32(ops.s1 as u64, val.min(tmp))?;
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xe000202f,
         name: "AMOMAXU.W",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u32(ops.s1 as u64)?;
             let val = ops.s2 as u32;
             cpu.mmu.store_virt_u32(ops.s1 as u64, val.max(tmp))?;
             Ok(Some(i64::from(tmp as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // RV64A
-    Instruction {
+    RVInsnSpec {
         mask: 0xf9f0707f,
         bits: 0x1000302f,
         name: "LR.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let data = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
             let pa = cpu
                 .mmu
@@ -2693,13 +2721,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(data as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x1800302f,
         name: "SC.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let pa = cpu
                 .mmu
                 .translate_address(ops.s1 as u64, MemoryAccessType::Write, false)?;
@@ -2713,26 +2741,26 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(res))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x0800302f,
         name: "AMOSWAP.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)? as i64;
             cpu.mmu.store_virt_u64(ops.s1 as u64, ops.s2 as u64)?;
             cpu.reservation = None;
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x0000302f,
         name: "AMOADD.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u64(ops.s1 as u64, tmp.wrapping_add(ops.s2 as u64))?;
@@ -2740,13 +2768,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x2000302f,
         name: "AMOXOR.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u64(ops.s1 as u64, tmp ^ (ops.s2 as u64))?;
@@ -2754,13 +2782,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x6000302f,
         name: "AMOAND.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u64(ops.s1 as u64, tmp & (ops.s2 as u64))?;
@@ -2768,13 +2796,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x4000302f,
         name: "AMOOR.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
             cpu.mmu
                 .store_virt_u64(ops.s1 as u64, tmp | (ops.s2 as u64))?;
@@ -2782,13 +2810,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0x8000302f,
         name: "AMOMIN.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)? as i64;
             let val = ops.s2;
             cpu.mmu.store_virt_u64(ops.s1 as u64, val.min(tmp) as u64)?;
@@ -2796,13 +2824,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xa000302f,
         name: "AMOMAX.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)? as i64;
             let val = ops.s2;
             cpu.mmu.store_virt_u64(ops.s1 as u64, val.max(tmp) as u64)?;
@@ -2810,13 +2838,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xc000302f,
         name: "AMOMINU.D",
-        operation: |cpu, _address, _word, values| {
+        execute: |cpu, _address, _word, values| {
             let tmp = cpu.mmu.load_virt_u64(values.s1 as u64)?;
             let val = values.s2 as u64;
             cpu.mmu.store_virt_u64(values.s1 as u64, val.min(tmp))?;
@@ -2824,13 +2852,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xf800707f,
         bits: 0xe000302f,
         name: "AMOMAXU.D",
-        operation: |cpu, _address, _word, values| {
+        execute: |cpu, _address, _word, values| {
             let tmp = cpu.mmu.load_virt_u64(values.s1 as u64)?;
             let val = values.s2 as u64;
             cpu.mmu.store_virt_u64(values.s1 as u64, val.max(tmp))?;
@@ -2838,27 +2866,27 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(tmp as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // RV32F
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002007,
         name: "FLW",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
             Ok(Some(v | fp::NAN_BOX_F32))
         },
         disassemble: dump_format_i_mem,
-        get_instruction_info: get_instruction_info_i_fx,
+        decode: get_instruction_info_i_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00002027,
         name: "FSW",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s_xf(word);
             cpu.check_float_access(0)?;
             cpu.reservation = None;
@@ -2867,13 +2895,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s_xf,
+        decode: get_instruction_info_s_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x00000043,
         name: "FMADD.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             // XXX Update fflags
@@ -2882,13 +2910,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x00000047,
         name: "FMSUB.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f32(
@@ -2896,13 +2924,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x0000004b,
         name: "FNMSUB.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f32(
@@ -2910,13 +2938,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x0000004f,
         name: "FNMADD.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f32(
@@ -2924,50 +2952,50 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x00000053,
         name: "FADD.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) + op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x08000053,
         name: "FSUB.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) - op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x10000053,
         name: "FMUL.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             // @TODO: Update fcsr
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) * op_to_f32(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x18000053,
         name: "FDIV.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(if op_to_f32(ops.s2) == 0.0 {
@@ -2981,25 +3009,25 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0x58000053,
         name: "FSQRT.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20000053,
         name: "FSGNJ.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
@@ -3008,13 +3036,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20001053,
         name: "FSGNJN.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
@@ -3023,13 +3051,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20002053,
         name: "FSGNJX.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
@@ -3038,73 +3066,73 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x28000053,
         name: "FMIN.S",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
             let (f1, f2) = (op_to_f32(ops.s1), op_to_f32(ops.s2));
             Ok(Some(op_from_f32(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x28001053,
         name: "FMAX.S",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
             let (f1, f2) = (op_to_f32(ops.s1), op_to_f32(ops.s2));
             Ok(Some(op_from_f32(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc0000053,
         name: "FCVT.W.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(i64::from(op_to_f32(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc0100053,
         name: "FCVT.WU.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(i64::from(op_to_f32(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xe0000053,
         name: "FMV.X.W",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             Ok(Some(i64::from(cpu.read_f(f.rs1) as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa0002053,
         name: "FEQ.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::feq(cpu.read_f(f.rs1), ops.s2);
@@ -3112,13 +3140,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa0001053,
         name: "FLT.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::flt(cpu.read_f(f.rs1), ops.s2);
@@ -3126,13 +3154,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa0000053,
         name: "FLE.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf32::fle(cpu.read_f(f.rs1), ops.s2);
@@ -3140,25 +3168,25 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xe0001053,
         name: "FCLASS.S",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             Ok(Some(1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd0000053,
         name: "FCVT.S.W",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_i32_sf32(ops.s1, cpu.get_rm(f.funct3));
@@ -3166,13 +3194,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd0100053,
         name: "FCVT.S.WU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_u32_sf32(ops.s1, cpu.get_rm(f.funct3));
@@ -3180,50 +3208,50 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xf0000053,
         name: "FMV.W.X",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(fp::NAN_BOX_F32 | ops.s1))
         },
         disassemble: dump_format_r_f,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
     // RV64F
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc0200053,
         name: "FCVT.L.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_to_f32(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc0300053,
         name: "FCVT.LU.S",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_to_f32(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd0200053,
         name: "FCVT.S.L",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_i64_sf32(ops.s1, cpu.get_rm(f.funct3));
@@ -3231,13 +3259,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd0300053,
         name: "FCVT.S.LU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             let (r, fflags) = cvt_u64_sf32(ops.s1, cpu.get_rm(f.funct3));
@@ -3246,40 +3274,40 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(r))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
     // RV32D
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003007,
         name: "FLD",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_i_fx(word);
             cpu.check_float_access(0)?;
             let v = cpu.memop(Read, ops.s1, f.imm, 0, 8)?;
             Ok(Some(v))
         },
         disassemble: dump_format_i,
-        get_instruction_info: get_instruction_info_i_fx,
+        decode: get_instruction_info_i_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0000707f,
         bits: 0x00003027,
         name: "FSD",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_s_xf(word);
             cpu.check_float_access(0)?;
             cpu.mmu.store64(ops.s1.wrapping_add(f.imm), ops.s2)?;
             Ok(None)
         },
         disassemble: dump_format_s,
-        get_instruction_info: get_instruction_info_s_xf,
+        decode: get_instruction_info_s_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x02000043,
         name: "FMADD.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f64(
@@ -3287,13 +3315,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x02000047,
         name: "FMSUB.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f64(
@@ -3301,13 +3329,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x0200004b,
         name: "FNMSUB.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f64(
@@ -3317,13 +3345,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0x0600007f,
         bits: 0x0200004f,
         name: "FNMADD.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r2_ffff(word);
             cpu.check_float_access(f.rm)?;
             Ok(Some(op_from_f64(
@@ -3333,50 +3361,50 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             )))
         },
         disassemble: dump_format_r2_ffff,
-        get_instruction_info: get_instruction_info_r2_ffff,
+        decode: get_instruction_info_r2_ffff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x02000053,
         name: "FADD.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) + op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x0a000053,
         name: "FSUB.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) - op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x12000053,
         name: "FMUL.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             // @TODO: Update fcsr
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) * op_to_f64(ops.s2))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00007f,
         bits: 0x1a000053,
         name: "FDIV.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             // Is this implementation correct?
@@ -3391,25 +3419,25 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0x5a000053,
         name: "FSQRT.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_ff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1).sqrt())))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x22000053,
         name: "FSGNJ.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
@@ -3418,13 +3446,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x22001053,
         name: "FSGNJN.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
@@ -3433,13 +3461,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x22002053,
         name: "FSGNJX.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(0)?;
             let rs1_bits = cpu.read_f(f.rs1);
@@ -3448,49 +3476,49 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(sign_bit ^ rs1_bits))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x2A000053,
         name: "FMIN.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
             let (f1, f2) = (op_to_f64(ops.s1), op_to_f64(ops.s2));
             Ok(Some(op_from_f64(if f1 < f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x2A001053,
         name: "FMAX.D",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
             let (f1, f2) = (op_to_f64(ops.s1), op_to_f64(ops.s2));
             Ok(Some(op_from_f64(if f1 > f2 { f1 } else { f2 })))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0x40100053,
         name: "FCVT.S.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f32(op_to_f64(ops.s1) as f32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0x42000053,
         name: "FCVT.D.S",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
             let (v, fflags) = fp::fcvt_d_s(cpu.read_f(f.rs1));
@@ -3498,13 +3526,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(v))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fff,
+        decode: get_instruction_info_r_fff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa2002053,
         name: "FEQ.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::feq(cpu.read_f(f.rs1), ops.s2);
@@ -3513,13 +3541,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_empty,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa2001053,
         name: "FLT.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::flt(cpu.read_f(f.rs1), ops.s2);
@@ -3527,13 +3555,13 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0xa2000053,
         name: "FLE.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xff(word);
             cpu.check_float_access(0)?;
             let (r, fflags) = Sf64::fle(cpu.read_f(f.rs1), ops.s2);
@@ -3541,161 +3569,161 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(Some(i64::from(r)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xff,
+        decode: get_instruction_info_r_xff,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xe2001053,
         name: "FCLASS.D",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             Ok(Some(1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc2000053,
         name: "FCVT.W.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(i64::from(op_to_f64(ops.s1) as i32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc2100053,
         name: "FCVT.WU.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(i64::from(op_to_f64(ops.s1) as u32)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd2000053,
         name: "FCVT.D.W",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(f64::from(ops.s1 as i32))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd2100053,
         name: "FCVT.D.WU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(f64::from(ops.s1 as u32))))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
     // RV64D
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc2200053,
         name: "FCVT.L.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_to_f64(ops.s1) as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xc2300053,
         name: "FCVT.LU.D",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_to_f64(ops.s1) as u64 as i64))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xe2000053,
         name: "FMV.X.D",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_r_xf(word);
             cpu.check_float_access(0)?;
             Ok(Some(cpu.read_f(f.rs1)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_xf,
+        decode: get_instruction_info_r_xf,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd2200053,
         name: "FCVT.D.L",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(ops.s1 as f64)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0007f,
         bits: 0xd2300053,
         name: "FCVT.D.LU",
-        operation: |cpu, _address, word, ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fx(word);
             cpu.check_float_access(f.funct3)?;
             Ok(Some(op_from_f64(ops.s1 as u64 as f64)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfff0707f,
         bits: 0xf2000053,
         name: "FMV.D.X",
-        operation: |cpu, _address, _word, ops| {
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
             Ok(Some(ops.s1))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r_fx,
+        decode: get_instruction_info_r_fx,
     },
     // Remaining (all system-level) that weren't listed in the instr-table
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x7b200073,
         name: "DRET",
-        operation: |_cpu, _address, _word, _ops| {
+        execute: |_cpu, _address, _word, _ops| {
             todo!("Handling dret requires handling all of debug mode")
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             ctf: true,
             exceptional: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x30200073,
         name: "MRET",
-        operation: |cpu, _address, _word, _ops| {
+        execute: |cpu, _address, _word, _ops| {
             cpu.pc = cpu.read_csr(Csr::Mepc as u16)? as i64;
             let status = cpu.read_csr_raw(Csr::Mstatus);
 
@@ -3713,18 +3741,18 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             ctf: true,
             exceptional: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x10200073,
         name: "SRET",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             if cpu.mmu.prv == PrivMode::U
                 || cpu.mmu.prv == PrivMode::S && cpu.mmu.mstatus & MSTATUS_TSR != 0
             {
@@ -3750,18 +3778,18 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             ctf: true,
             exceptional: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe007fff,
         bits: 0x12000073,
         name: "SFENCE.VMA",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             if cpu.mmu.prv == PrivMode::U
                 || cpu.mmu.prv == PrivMode::S && cpu.mmu.mstatus & MSTATUS_TVM != 0
             {
@@ -3776,18 +3804,18 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             serialize: true,
             ctf: false,
             exceptional: false,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xffffffff,
         bits: 0x10500073,
         name: "WFI",
-        operation: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, _ops| {
             /*
              * "When TW=1, if WFI is executed in S- mode, and it does
              * not complete within an implementation-specific, bounded
@@ -3806,120 +3834,120 @@ const INSTRUCTIONS: [Instruction; INSTRUCTION_NUM] = [
             Ok(None)
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             serialize: true,
             ctf: false,
             exceptional: false,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
     // Zba -- AKA, my only favorite extension
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0800003b,
         name: "ADD.UW",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 & 0xffffffff))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 & 0xffffffff))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20002033,
         name: "SH1ADD",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 1))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 1))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x2000203b,
         name: "SH1ADD.UW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 1)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20004033,
         name: "SH2ADD",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 2))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 2))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x2000403b,
         name: "SH2ADD.UW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 2)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x20006033,
         name: "SH3ADD",
-        operation: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 3))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s2.wrapping_add(ops.s1 << 3))),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x2000603b,
         name: "SH3ADD.UW",
-        operation: |_cpu, _address, _word, ops| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(ops.s2.wrapping_add((ops.s1 & 0xffffffff) << 3)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0800101b,
         name: "SLLI.UW",
-        operation: |_cpu, _address, word, ops| {
+        execute: |_cpu, _address, word, ops| {
             Ok(Some((ops.s1 & 0xffffffff) << ((word >> 20) & 0x3f)))
         },
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // Zicond extension
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0e005033,
         name: "CZERO.EQZ",
-        operation: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 == 0 { 0 } else { ops.s1 })),
+        execute: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 == 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
-    Instruction {
+    RVInsnSpec {
         mask: 0xfe00707f,
         bits: 0x0e007033,
         name: "CZERO.NEZ",
-        operation: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 != 0 { 0 } else { ops.s1 })),
+        execute: |_cpu, _address, _word, ops| Ok(Some(if ops.s2 != 0 { 0 } else { ops.s1 })),
         disassemble: dump_format_r,
-        get_instruction_info: get_instruction_info_r,
+        decode: get_instruction_info_r,
     },
     // Last one is a sentiel and must always be this illegal instruction
-    Instruction {
+    RVInsnSpec {
         mask: 0,
         bits: 0,
         name: "INVALID",
-        operation: |_cpu, _address, word, _ops| {
+        execute: |_cpu, _address, word, _ops| {
             Err(Exception {
                 trap: Trap::IllegalInstruction,
                 tval: word as i64,
             })
         },
         disassemble: dump_empty,
-        get_instruction_info: |_| InstructionInfo {
+        decode: |_| Uop {
             exceptional: true,
             ctf: true,
             serialize: true,
-            ..InstructionInfo::default()
+            ..Uop::default()
         },
     },
 ];
