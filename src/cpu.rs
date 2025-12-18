@@ -1596,6 +1596,23 @@ fn decode_u(word: u32) -> Uop {
     }
 }
 
+fn decode_serialized(_word: u32) -> Uop {
+    Uop {
+        ctf: true,
+        serialize: true,
+        ..Uop::default()
+    }
+}
+
+fn decode_exceptional(_word: u32) -> Uop {
+    Uop {
+        ctf: true,
+        exceptional: true,
+        serialize: true,
+        ..Uop::default()
+    }
+}
+
 // XXX Could also just implement Display for Reg...
 const fn get_register_name(num: Reg) -> &'static str {
     [
@@ -2028,13 +2045,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "FENCE",
         mask: 0xf000707f,
         bits: 0x0000000f,
-        decode: |_| Uop {
-            // XXX give this a name, like decode_fence
-            serialize: true,
-            ctf: false,
-            exceptional: false,
-            ..Uop::default()
-        },
+        decode: decode_serialized,
         execute: |_cpu, _address, word, _ops| {
             if word == 0x0100000f {
                 // PAUSE instruction hint
@@ -2051,13 +2062,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "FENCE.TSO",
         mask: 0xf000707f,
         bits: 0x8000000f,
-        decode: |_| Uop {
-            // XXX give this a name like decode_fence_tso
-            serialize: true,
-            ctf: false,
-            exceptional: false,
-            ..Uop::default()
-        },
+        decode: decode_serialized,
         execute: |_cpu, _address, _word, _ops| {
             // Fence memory ops (we are currently TSO already)
             Ok(None)
@@ -2068,13 +2073,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "ECALL",
         mask: 0xffffffff,
         bits: 0x00000073,
-        decode: |_| Uop {
-            // XXX give this a name like decode_ecall
-            exceptional: true,
-            ctf: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |cpu, address, _word, _ops| {
             let trap_type = match cpu.mmu.prv {
                 PrivMode::U => Trap::EnvironmentCallFromUMode,
@@ -2092,13 +2091,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "EBREAK",
         mask: 0xffffffff,
         bits: 0x00100073,
-        decode: |_| Uop {
-            // XXX
-            exceptional: true,
-            ctf: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |_cpu, _address, _word, _ops| {
             Err(Exception {
                 trap: Trap::Breakpoint,
@@ -3713,13 +3706,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "DRET",
         mask: 0xffffffff,
         bits: 0x7b200073,
-        decode: |_| Uop {
-            // XXX
-            ctf: true,
-            exceptional: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |_cpu, _address, _word, _ops| {
             todo!("Handling dret requires handling all of debug mode")
         },
@@ -3729,12 +3716,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "MRET",
         mask: 0xffffffff,
         bits: 0x30200073,
-        decode: |_| Uop {
-            ctf: true,
-            exceptional: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |cpu, _address, _word, _ops| {
             cpu.pc = cpu.read_csr(Csr::Mepc as u16)? as i64;
             let status = cpu.read_csr_raw(Csr::Mstatus);
@@ -3758,12 +3740,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "SRET",
         mask: 0xffffffff,
         bits: 0x10200073,
-        decode: |_| Uop {
-            ctf: true,
-            exceptional: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |cpu, _address, word, _ops| {
             if cpu.mmu.prv == PrivMode::U
                 || cpu.mmu.prv == PrivMode::S && cpu.mmu.mstatus & MSTATUS_TSR != 0
@@ -3795,12 +3772,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "SFENCE.VMA",
         mask: 0xfe007fff,
         bits: 0x12000073,
-        decode: |_| Uop {
-            serialize: true,
-            ctf: false,
-            exceptional: false,
-            ..Uop::default()
-        },
+        decode: decode_serialized,
         execute: |cpu, _address, word, _ops| {
             if cpu.mmu.prv == PrivMode::U
                 || cpu.mmu.prv == PrivMode::S && cpu.mmu.mstatus & MSTATUS_TVM != 0
@@ -3821,12 +3793,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "WFI",
         mask: 0xffffffff,
         bits: 0x10500073,
-        decode: |_| Uop {
-            serialize: true,
-            ctf: false,
-            exceptional: false,
-            ..Uop::default()
-        },
+        decode: decode_serialized,
         execute: |cpu, _address, word, _ops| {
             /*
              * "When TW=1, if WFI is executed in S- mode, and it does
@@ -3942,12 +3909,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "INVALID",
         mask: 0,
         bits: 0,
-        decode: |_| Uop {
-            exceptional: true,
-            ctf: true,
-            serialize: true,
-            ..Uop::default()
-        },
+        decode: decode_exceptional,
         execute: |_cpu, _address, word, _ops| {
             Err(Exception {
                 trap: Trap::IllegalInstruction,
