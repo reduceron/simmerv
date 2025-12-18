@@ -35,7 +35,10 @@ use terminal::Terminal;
 
 pub type Reg = Bounded<65>;
 
-/// Holds information about registers used by an instruction.
+/// The decoded instruction, convenient for execution
+// XXX Needs Seqno, ctf_target_opt, execute (either fn or enum).
+// XXX ctf, exceptional, serialize (and more?) should be combined into a classification represented
+// as an enum. We also want to easily distinguish ALU, ALUFP, CTF, LOAD, STORE, ATOMIC, SYSTEM, ...?
 #[derive(Debug, PartialEq, Eq)]
 pub struct Uop {
     /// Destination Register
