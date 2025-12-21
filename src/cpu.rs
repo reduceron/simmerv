@@ -637,7 +637,7 @@ impl Cpu {
     // review each CSR.  Do Not Blanket allow reads and writes from unsupported
     // CSRs
     #[allow(clippy::cast_sign_loss)]
-    fn read_csr(&self, csrno: u16) -> Result<u64, Exception> {
+    fn read_csr(&self, csrno: u16) -> Result<i64, Exception> {
         use PrivMode::S;
 
         let illegal = Err(Exception {
@@ -660,11 +660,12 @@ impl Cpu {
             Csr::Time => return illegal,
             _ => {}
         }
-        Ok(self.read_csr_raw(csr))
+        Ok(self.read_csr_raw(csr) as i64)
     }
 
     #[allow(clippy::cast_sign_loss)]
-    fn write_csr(&mut self, csrno: u16, mut value: u64) -> Result<(), Exception> {
+    fn write_csr(&mut self, csrno: u16, value: i64) -> Result<(), Exception> {
+        let mut value = value as u64;
         let illegal = Err(Exception {
             trap: Trap::IllegalInstruction,
             tval: i64::from(self.insn), /* XXX we could assign this outside, eliminating the need
@@ -2292,11 +2293,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         execute: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
             let res = if f.rd.is_x0_dest() {
-                cpu.write_csr(f.csr, values.s1 as u64)?;
+                cpu.write_csr(f.csr, values.s1)?;
                 0
             } else {
-                let v = cpu.read_csr(f.csr)? as i64;
-                cpu.write_csr(f.csr, values.s1 as u64)?;
+                let v = cpu.read_csr(f.csr)?;
+                cpu.write_csr(f.csr, values.s1)?;
                 v
             };
 
@@ -2311,9 +2312,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         disassemble: disassemble_csr,
         execute: |cpu, _address, word, values| {
             let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)? as i64;
+            let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, (data | values.s1) as u64)?;
+                cpu.write_csr(f.csr, data | values.s1)?;
             }
             Ok(Some(data))
         },
@@ -2328,7 +2329,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, (data & !values.s1) as u64)?;
+                cpu.write_csr(f.csr, data & !values.s1)?;
             }
             Ok(Some(data))
         },
@@ -2343,11 +2344,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             let f = parse_format_csr(word);
 
             let res = if f.rd.is_x0_dest() {
-                cpu.write_csr(f.csr, f.rs1.get() as u64)?;
+                cpu.write_csr(f.csr, f.rs1.get() as i64)?;
                 0
             } else {
-                let v = cpu.read_csr(f.csr)? as i64;
-                cpu.write_csr(f.csr, f.rs1.get() as u64)?;
+                let v = cpu.read_csr(f.csr)?;
+                cpu.write_csr(f.csr, f.rs1.get() as i64)?;
                 v
             };
 
@@ -2362,9 +2363,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         disassemble: disassemble_csri,
         execute: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)? as i64;
+            let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, (data | f.rs1.get() as i64) as u64)?;
+                cpu.write_csr(f.csr, data | f.rs1.get() as i64)?;
             }
             Ok(Some(data))
         },
@@ -2377,9 +2378,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         disassemble: disassemble_csri,
         execute: |cpu, _address, word, _values| {
             let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)? as i64;
+            let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, (data & !(f.rs1.get() as i64)) as u64)?;
+                cpu.write_csr(f.csr, data & !(f.rs1.get() as i64))?;
             }
             Ok(Some(data))
         },
@@ -3727,7 +3728,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         decode: decode_exceptional,
         disassemble: disassemble_empty,
         execute: |cpu, _address, _word, _ops| {
-            cpu.pc = cpu.read_csr(Csr::Mepc as u16)? as i64;
+            cpu.pc = cpu.read_csr(Csr::Mepc as u16)?;
             let status = cpu.read_csr_raw(Csr::Mstatus);
 
             let mpie = (status >> 7) & 1;
@@ -3760,7 +3761,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
                 });
             }
 
-            cpu.pc = cpu.read_csr(Csr::Sepc as u16)? as i64;
+            cpu.pc = cpu.read_csr(Csr::Sepc as u16)?;
             let status = cpu.read_csr_raw(Csr::Sstatus);
             let spie = (status >> 5) & 1;
             let spp = (status >> 8) & 1;
