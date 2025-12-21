@@ -861,9 +861,6 @@ impl Cpu {
         self.rf[r]
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn read_f64(&self, r: Reg) -> f64 { f64::from_bits(self.read_f(r) as u64) }
-
     fn read_frm(&self) -> RoundingMode {
         assert_ne!(self.fs, 0);
         self.frm
@@ -3144,10 +3141,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0100053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, uop, ops| {
-            let f = parse_format_r_fx(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(uop.rm)?;
-            let (r, fflags) = cvt_u32_sf32(ops.s1, cpu.get_rm(f.funct3));
+            let (r, fflags) = cvt_u32_sf32(ops.s1, cpu.get_rm(uop.rm as usize));
             cpu.add_to_fflags(fflags);
             Ok(Some(r))
         },
@@ -3192,10 +3188,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0200053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, uop, ops| {
-            let f = parse_format_r_fx(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(uop.rm)?;
-            let (r, fflags) = cvt_i64_sf32(ops.s1, cpu.get_rm(f.funct3));
+            let (r, fflags) = cvt_i64_sf32(ops.s1, cpu.get_rm(uop.rm as usize));
             cpu.add_to_fflags(fflags);
             Ok(Some(r))
         },
@@ -3206,10 +3201,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0300053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, uop, ops| {
-            let f = parse_format_r_fx(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(uop.rm)?;
-            let (r, fflags) = cvt_u64_sf32(ops.s1, cpu.get_rm(f.funct3));
+            let (r, fflags) = cvt_u64_sf32(ops.s1, cpu.get_rm(uop.rm as usize));
             cpu.add_to_fflags(fflags);
 
             Ok(Some(r))
@@ -3272,13 +3266,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200004b,
         decode: decode_r2_ffff,
         disassemble: disassemble_r2_ffff,
-        execute: |cpu, _address, word, uop, ops| {
-            let f = parse_format_r2_ffff(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(
-                -(cpu
-                    .read_f64(f.rs1)
-                    .mul_add(op_to_f64(ops.s2), -op_to_f64(ops.s3))),
+                -(op_to_f64(ops.s1).mul_add(op_to_f64(ops.s2), -op_to_f64(ops.s3))),
             )))
         },
     },
@@ -3288,13 +3279,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200004f,
         decode: decode_r2_ffff,
         disassemble: disassemble_r2_ffff,
-        execute: |cpu, _address, word, uop, ops| {
-            let f = parse_format_r2_ffff(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(
-                -(cpu
-                    .read_f64(f.rs1)
-                    .mul_add(op_to_f64(ops.s2), op_to_f64(ops.s3))),
+                -(op_to_f64(ops.s1).mul_add(op_to_f64(ops.s2), op_to_f64(ops.s3))),
             )))
         },
     },
@@ -3797,11 +3785,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "SLLI.UW",
         mask: 0xfe00707f,
         bits: 0x0800101b,
-        decode: decode_r,
+        decode: decode_r_shift,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, word, _uop, ops| {
-            Ok(Some((ops.s1 & 0xffffffff) << ((word >> 20) & 0x3f)))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some((ops.s1 & 0xffffffff) << uop.imm)),
     },
     // Zicond extension
     RVInsnSpec {
