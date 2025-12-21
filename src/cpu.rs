@@ -1215,6 +1215,7 @@ fn decode_csr(word: u32) -> Uop {
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        imm: i64::from(f.csr),
         serialize: true,
         ..Uop::default()
     }
@@ -1224,6 +1225,8 @@ fn decode_csri(word: u32) -> Uop {
     let f = parse_format_csr(word); // uimm is not a register read
     Uop {
         rd: f.rd,
+        rs1: f.rs1,
+        imm: i64::from(f.csr),
         serialize: true,
         ..Uop::default()
     }
@@ -2255,14 +2258,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_csr(word);
-            let res = if f.rd.is_x0_dest() {
-                cpu.write_csr(f.csr, ops.s1)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let res = if uop.rd.is_x0_dest() {
+                cpu.write_csr(uop.imm as u16, ops.s1)?;
                 0
             } else {
-                let v = cpu.read_csr(f.csr)?;
-                cpu.write_csr(f.csr, ops.s1)?;
+                let v = cpu.read_csr(uop.imm as u16)?;
+                cpu.write_csr(uop.imm as u16, ops.s1)?;
                 v
             };
 
@@ -2275,11 +2277,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)?;
-            if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data | ops.s1)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let data = cpu.read_csr(uop.imm as u16)?;
+            if uop.rs1.get() != 0 {
+                cpu.write_csr(uop.imm as u16, data | ops.s1)?;
             }
             Ok(Some(data))
         },
@@ -2290,11 +2291,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)? as i64;
-            if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data & !ops.s1)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let data = cpu.read_csr(uop.imm as u16)?;
+            if uop.rs1.get() != 0 {
+                cpu.write_csr(uop.imm as u16, data & !ops.s1)?;
             }
             Ok(Some(data))
         },
@@ -2305,15 +2305,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _uop, _ops| {
-            let f = parse_format_csr(word);
-
-            let res = if f.rd.is_x0_dest() {
-                cpu.write_csr(f.csr, f.rs1.get() as i64)?;
+        execute: |cpu, _address, _word, uop, _ops| {
+            let res = if uop.rd.is_x0_dest() {
+                cpu.write_csr(uop.imm as u16, uop.rs1.get() as i64)?;
                 0
             } else {
-                let v = cpu.read_csr(f.csr)?;
-                cpu.write_csr(f.csr, f.rs1.get() as i64)?;
+                let v = cpu.read_csr(uop.imm as u16)?;
+                cpu.write_csr(uop.imm as u16, uop.rs1.get() as i64)?;
                 v
             };
 
@@ -2326,11 +2324,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _uop, _ops| {
-            let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)?;
-            if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data | f.rs1.get() as i64)?;
+        execute: |cpu, _address, _word, uop, _ops| {
+            let data = cpu.read_csr(uop.imm as u16)?;
+            if uop.rs1.get() != 0 {
+                cpu.write_csr(uop.imm as u16, data | uop.rs1.get() as i64)?;
             }
             Ok(Some(data))
         },
@@ -2341,11 +2338,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _uop, _ops| {
-            let f = parse_format_csr(word);
-            let data = cpu.read_csr(f.csr)?;
-            if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data & !(f.rs1.get() as i64))?;
+        execute: |cpu, _address, _word, uop, _ops| {
+            let data = cpu.read_csr(uop.imm as u16)?;
+            if uop.rs1.get() != 0 {
+                cpu.write_csr(uop.imm as u16, data & !(uop.rs1.get() as i64))?;
             }
             Ok(Some(data))
         },
