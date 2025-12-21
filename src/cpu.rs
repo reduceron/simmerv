@@ -49,6 +49,8 @@ pub struct Uop {
     pub rs2: Reg,
     /// Source Register 3
     pub rs3: Reg,
+    /// Immediate field (imm, csrno, or shift amount)
+    pub imm: i64,
     /// May change the Control Flow
     pub ctf: bool,
     /// May throw exception (ecall/ebreak are guaranteed to)
@@ -219,6 +221,7 @@ impl Default for Uop {
             rs1: ZEROREG,
             rs2: ZEROREG,
             rs3: ZEROREG,
+            imm: 0,
             ctf: false,
             exceptional: false,
             serialize: false,
@@ -1132,6 +1135,7 @@ fn decode_b(word: u32) -> Uop {
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
+        imm: f.imm,
         ctf: true,
         ..Uop::default()
     }
@@ -1268,6 +1272,7 @@ fn decode_i(word: u32) -> Uop {
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1277,6 +1282,7 @@ fn decode_i_fx(word: u32) -> Uop {
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1305,6 +1311,7 @@ fn decode_j(word: u32) -> Uop {
     Uop {
         rd: f.rd,
         ctf: true,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1451,6 +1458,7 @@ fn decode_r_shift(word: u32) -> Uop {
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        imm: i64::from(f.imm),
         ..Uop::default()
     }
 }
@@ -1560,6 +1568,7 @@ fn decode_s(word: u32) -> Uop {
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1569,6 +1578,7 @@ fn decode_s_xf(word: u32) -> Uop {
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1611,6 +1621,7 @@ fn decode_u(word: u32) -> Uop {
     let f = parse_format_u(word);
     Uop {
         rd: f.rd,
+        imm: f.imm,
         ..Uop::default()
     }
 }
@@ -1676,10 +1687,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000037,
         decode: decode_u,
         disassemble: disassemble_u,
-        execute: |_cpu, _address, word, _uop, _ops| {
-            let f = parse_format_u(word);
-            Ok(Some(f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, _ops| Ok(Some(uop.imm)),
     },
     RVInsnSpec {
         name: "AUIPC",
@@ -1687,10 +1695,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000017,
         decode: decode_u,
         disassemble: disassemble_u,
-        execute: |_cpu, address, word, _uop, _ops| {
-            let f = parse_format_u(word);
-            Ok(Some(address.wrapping_add(f.imm)))
-        },
+        execute: |_cpu, address, _word, uop, _ops| Ok(Some(address.wrapping_add(uop.imm))),
     },
     RVInsnSpec {
         name: "JAL",
@@ -1698,10 +1703,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000006f,
         decode: decode_j,
         disassemble: disassemble_j,
-        execute: |cpu, address, word, _uop, _ops| {
-            let f = parse_format_j(word);
+        execute: |cpu, address, _word, uop, _ops| {
             let tmp = cpu.pc;
-            cpu.pc = address.wrapping_add(f.imm);
+            cpu.pc = address.wrapping_add(uop.imm);
             Ok(Some(tmp))
         },
     },
@@ -1711,10 +1715,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000067,
         decode: decode_i,
         disassemble: disassemble_jalr,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
+        execute: |cpu, _address, _word, uop, ops| {
             let tmp = cpu.pc;
-            cpu.pc = ops.s1.wrapping_add(f.imm) & !1;
+            cpu.pc = ops.s1.wrapping_add(uop.imm) & !1;
             Ok(Some(tmp))
         },
     },
@@ -1724,10 +1727,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if ops.s1 == ops.s2 {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1738,10 +1740,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if ops.s1 != ops.s2 {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1752,10 +1753,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00004063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if ops.s1 < ops.s2 {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1766,10 +1766,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if ops.s1 >= ops.s2 {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1780,10 +1779,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if (ops.s1 as u64) < (ops.s2 as u64) {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1794,10 +1792,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, word, _uop, ops| {
-            let f = parse_format_b(word);
+        execute: |cpu, address, _word, uop, ops| {
             if (ops.s1 as u64) >= (ops.s2 as u64) {
-                cpu.pc = address.wrapping_add(f.imm);
+                cpu.pc = address.wrapping_add(uop.imm);
             }
             Ok(None)
         },
@@ -1808,9 +1805,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 1)? as i8 as i64;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 1)? as i8 as i64;
             Ok(Some(v))
         },
     },
@@ -1820,9 +1816,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 2)? as i16 as i64;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 2)? as i16 as i64;
             Ok(Some(v))
         },
     },
@@ -1832,9 +1827,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 4)?;
             Ok(Some(v as i32 as i64))
         },
     },
@@ -1844,9 +1838,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00004003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 1)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 1)?;
             Ok(Some(v))
         },
     },
@@ -1856,9 +1849,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 2)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 2)?;
             Ok(Some(v))
         },
     },
@@ -1868,9 +1860,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000023,
         decode: decode_s,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s(word);
-            let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 1)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let _ = cpu.memop(Write, ops.s1, uop.imm, ops.s2, 1)?;
             Ok(None)
         },
     },
@@ -1880,9 +1871,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001023,
         decode: decode_s,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s(word);
-            let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 2)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let _ = cpu.memop(Write, ops.s1, uop.imm, ops.s2, 2)?;
             Ok(None)
         },
     },
@@ -1892,9 +1882,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002023,
         decode: decode_s,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s(word);
-            let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 4)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let _ = cpu.memop(Write, ops.s1, uop.imm, ops.s2, 4)?;
             Ok(None)
         },
     },
@@ -1904,10 +1893,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(ops.s1.wrapping_add(f.imm)))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1.wrapping_add(uop.imm))),
     },
     RVInsnSpec {
         name: "SLTI",
@@ -1915,10 +1901,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(i64::from(ops.s1 < f.imm)))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(i64::from(ops.s1 < uop.imm))),
     },
     RVInsnSpec {
         name: "SLTIU",
@@ -1926,9 +1909,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(i64::from((ops.s1 as u64) < (f.imm as u64))))
+        execute: |_cpu, _address, _word, uop, ops| {
+            Ok(Some(i64::from((ops.s1 as u64) < (uop.imm as u64))))
         },
     },
     RVInsnSpec {
@@ -1937,10 +1919,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00004013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(ops.s1 ^ f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1 ^ uop.imm)),
     },
     RVInsnSpec {
         name: "ORI",
@@ -1948,10 +1927,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(ops.s1 | f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1 | uop.imm)),
     },
     RVInsnSpec {
         name: "ANDI",
@@ -1959,10 +1935,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007013,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(ops.s1 & f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1 & uop.imm)),
     },
     // RV32I SLLI subsumed by RV64I
     // RV32I SRLI subsumed by RV64I
@@ -2117,9 +2090,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 4)?;
             Ok(Some(v))
         },
     },
@@ -2129,9 +2101,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003003,
         decode: decode_i,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 8)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 8)?;
             Ok(Some(v))
         },
     },
@@ -2141,9 +2112,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003023,
         decode: decode_s,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s(word);
-            let _ = cpu.memop(Write, ops.s1, f.imm, ops.s2, 8)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            let _ = cpu.memop(Write, ops.s1, uop.imm, ops.s2, 8)?;
             Ok(None)
         },
     },
@@ -2153,10 +2123,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001013,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(ops.s1 << f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1 << uop.imm)),
     },
     RVInsnSpec {
         name: "SRLI",
@@ -2164,10 +2131,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005013,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(((ops.s1 as u64) >> f.imm) as i64))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(((ops.s1 as u64) >> uop.imm) as i64)),
     },
     RVInsnSpec {
         name: "SRAI",
@@ -2175,10 +2139,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x40005013,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(ops.s1 >> f.imm))
-        },
+        execute: |_cpu, _address, _word, uop, ops| Ok(Some(ops.s1 >> uop.imm)),
     },
     RVInsnSpec {
         name: "ADDIW",
@@ -2186,9 +2147,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000001b,
         decode: decode_i,
         disassemble: disassemble_i,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_i(word);
-            Ok(Some(i64::from(ops.s1.wrapping_add(f.imm) as i32)))
+        execute: |_cpu, _address, _word, uop, ops| {
+            Ok(Some(i64::from(ops.s1.wrapping_add(uop.imm) as i32)))
         },
     },
     RVInsnSpec {
@@ -2197,9 +2157,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000101b,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(i64::from((ops.s1 as i32) << (f.imm & 31))))
+        execute: |_cpu, _address, _word, uop, ops| {
+            Ok(Some(i64::from((ops.s1 as i32) << (uop.imm & 31))))
         },
     },
     RVInsnSpec {
@@ -2208,9 +2167,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000501b,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(i64::from(((ops.s1 as u32) >> (f.imm & 31)) as i32)))
+        execute: |_cpu, _address, _word, uop, ops| {
+            Ok(Some(i64::from(((ops.s1 as u32) >> (uop.imm & 31)) as i32)))
         },
     },
     RVInsnSpec {
@@ -2219,9 +2177,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x4000501b,
         decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_shift(word);
-            Ok(Some(i64::from((ops.s1 as i32) >> (f.imm & 31))))
+        execute: |_cpu, _address, _word, uop, ops| {
+            Ok(Some(i64::from((ops.s1 as i32) >> (uop.imm & 31))))
         },
     },
     RVInsnSpec {
@@ -2887,10 +2844,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002007,
         decode: decode_i_fx,
         disassemble: disassemble_i_mem,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i_fx(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(0)?;
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 4)?;
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 4)?;
             Ok(Some(v | fp::NAN_BOX_F32))
         },
     },
@@ -2900,12 +2856,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002027,
         decode: decode_s_xf,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s_xf(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(0)?;
             cpu.reservation = None;
             cpu.mmu
-                .store_virt_u32_(ops.s1.wrapping_add(f.imm), ops.s2)?;
+                .store_virt_u32_(ops.s1.wrapping_add(uop.imm), ops.s2)?;
             Ok(None)
         },
     },
@@ -3287,10 +3242,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003007,
         decode: decode_i_fx,
         disassemble: disassemble_i,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_i_fx(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(0)?;
-            let v = cpu.memop(Read, ops.s1, f.imm, 0, 8)?;
+            let v = cpu.memop(Read, ops.s1, uop.imm, 0, 8)?;
             Ok(Some(v))
         },
     },
@@ -3300,10 +3254,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003027,
         decode: decode_s_xf,
         disassemble: disassemble_s,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_s_xf(word);
+        execute: |cpu, _address, _word, uop, ops| {
             cpu.check_float_access(0)?;
-            cpu.mmu.store64(ops.s1.wrapping_add(f.imm), ops.s2)?;
+            cpu.mmu.store64(ops.s1.wrapping_add(uop.imm), ops.s2)?;
             Ok(None)
         },
     },
