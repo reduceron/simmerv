@@ -51,6 +51,8 @@ pub struct Uop {
     pub rs3: Reg,
     /// Immediate field (imm, csrno, or shift amount)
     pub imm: i64,
+    /// FP Rounding Mode
+    pub rm: u8,
     /// May change the Control Flow
     pub ctf: bool,
     /// May throw exception (ecall/ebreak are guaranteed to)
@@ -197,7 +199,7 @@ struct FormatU {
 // has rs3
 struct FormatR2 {
     rd: Reg,
-    rm: usize,
+    rm: u8,
     rs1: Reg,
     rs2: Reg,
     rs3: Reg,
@@ -222,6 +224,7 @@ impl Default for Uop {
             rs2: ZEROREG,
             rs3: ZEROREG,
             imm: 0,
+            rm: 0,
             ctf: false,
             exceptional: false,
             serialize: false,
@@ -307,7 +310,7 @@ impl Cpu {
 
     /// Checks that float instructions are enabled and
     /// that the rounding mode is legal; do not dirty the FP state
-    fn check_float_access_ro(&self, rm: usize) -> Result<(), Exception> {
+    fn check_float_access_ro(&self, rm: u8) -> Result<(), Exception> {
         if self.fs == 0 || rm == 5 || rm == 6 {
             Err(Exception {
                 trap: Trap::IllegalInstruction,
@@ -320,7 +323,7 @@ impl Cpu {
 
     /// Checks that float instructions are enabled and
     /// that the rounding mode is legal; dirty the FP state
-    fn check_float_access(&mut self, rm: usize) -> Result<(), Exception> {
+    fn check_float_access(&mut self, rm: u8) -> Result<(), Exception> {
         self.check_float_access_ro(rm)?;
         self.fs = 3;
         Ok(())
@@ -1364,15 +1367,6 @@ fn parse_format_r_fx(word: u32) -> FormatR {
     }
 }
 
-fn parse_format_r_ff(word: u32) -> FormatR {
-    FormatR {
-        rd: f((word >> 7) & 0x1f),           // [11:7]
-        funct3: ((word >> 12) & 7) as usize, // [14:12]
-        rs1: f((word >> 15) & 0x1f),         // [19:15]
-        rs2: f((word >> 20) & 0x1f),         // [24:20]
-    }
-}
-
 fn parse_format_r_fff(word: u32) -> FormatR {
     FormatR {
         rd: f((word >> 7) & 0x1f),           // [11:7]
@@ -1427,19 +1421,23 @@ fn decode_r_xff(word: u32) -> Uop {
 
 fn decode_r_fx(word: u32) -> Uop {
     let f = parse_format_r_fx(word);
+    #[allow(clippy::cast_possible_truncation)]
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        rm: (f.funct3 & 7) as u8,
         ..Uop::default()
     }
 }
 
 fn decode_r_fff(word: u32) -> Uop {
     let f = parse_format_r_fff(word);
+    #[allow(clippy::cast_possible_truncation)]
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
+        rm: (f.funct3 & 7) as u8,
         ..Uop::default()
     }
 }
@@ -1481,11 +1479,11 @@ fn disassemble_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate
 
 fn parse_format_r2_ffff(word: u32) -> FormatR2 {
     FormatR2 {
-        rd: f((word >> 7) & 0x1f),       // [11:7]
-        rm: ((word >> 12) & 7) as usize, // [14:12]
-        rs1: f((word >> 15) & 0x1f),     // [19:15]
-        rs2: f((word >> 20) & 0x1f),     // [24:20]
-        rs3: f((word >> 27) & 0x1f),     // [31:27]
+        rd: f((word >> 7) & 0x1f),    // [11:7]
+        rm: ((word >> 12) & 7) as u8, // [14:12]
+        rs1: f((word >> 15) & 0x1f),  // [19:15]
+        rs2: f((word >> 20) & 0x1f),  // [24:20]
+        rs3: f((word >> 27) & 0x1f),  // [31:27]
     }
 }
 
@@ -2923,9 +2921,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) + op_to_f32(ops.s2))))
         },
     },
@@ -2935,9 +2932,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x08000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) - op_to_f32(ops.s2))))
         },
     },
@@ -2947,10 +2943,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x10000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, _word, uop, ops| {
             // @TODO: Update fcsr
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1) * op_to_f32(ops.s2))))
         },
     },
@@ -2960,9 +2955,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x18000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(if op_to_f32(ops.s2) == 0.0 {
                 cpu.set_fcsr_dz();
                 f32::INFINITY
@@ -2980,9 +2974,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x58000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_ff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(op_to_f32(ops.s1).sqrt())))
         },
     },
@@ -3058,9 +3051,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc0000053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(i64::from(op_to_f32(ops.s1) as i32)))
         },
     },
@@ -3070,9 +3062,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc0100053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(i64::from(op_to_f32(ops.s1) as u32)))
         },
     },
@@ -3143,9 +3134,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0000053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, word, uop, ops| {
             let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             let (r, fflags) = cvt_i32_sf32(ops.s1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
             Ok(Some(r))
@@ -3157,9 +3148,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0100053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, word, uop, ops| {
             let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             let (r, fflags) = cvt_u32_sf32(ops.s1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
             Ok(Some(r))
@@ -3171,9 +3162,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xf0000053,
         decode: decode_r_fx,
         disassemble: disassemble_r_f,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(fp::NAN_BOX_F32 | ops.s1))
         },
     },
@@ -3184,9 +3174,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc0200053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_to_f32(ops.s1) as i64))
         },
     },
@@ -3196,9 +3185,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc0300053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_to_f32(ops.s1) as u64 as i64))
         },
     },
@@ -3208,9 +3196,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0200053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, word, uop, ops| {
             let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             let (r, fflags) = cvt_i64_sf32(ops.s1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
             Ok(Some(r))
@@ -3222,9 +3210,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd0300053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, word, uop, ops| {
             let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             let (r, fflags) = cvt_u64_sf32(ops.s1, cpu.get_rm(f.funct3));
             cpu.add_to_fflags(fflags);
 
@@ -3322,9 +3310,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) + op_to_f64(ops.s2))))
         },
     },
@@ -3334,9 +3321,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0a000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) - op_to_f64(ops.s2))))
         },
     },
@@ -3346,10 +3332,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x12000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
+        execute: |cpu, _address, _word, uop, ops| {
             // @TODO: Update fcsr
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1) * op_to_f64(ops.s2))))
         },
     },
@@ -3359,9 +3344,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x1a000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             // Is this implementation correct?
             Ok(Some(op_from_f64(if op_to_f64(ops.s2) == 0.0 {
                 cpu.set_fcsr_dz();
@@ -3380,9 +3364,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x5a000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_ff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(op_to_f64(ops.s1).sqrt())))
         },
     },
@@ -3458,9 +3441,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x40100053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f32(op_to_f64(ops.s1) as f32)))
         },
     },
@@ -3470,9 +3452,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x42000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fff(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             let (v, fflags) = fp::fcvt_d_s(ops.s1);
             cpu.add_to_fflags(fflags);
             Ok(Some(v))
@@ -3535,9 +3516,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc2000053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(i64::from(op_to_f64(ops.s1) as i32)))
         },
     },
@@ -3547,9 +3527,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc2100053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(i64::from(op_to_f64(ops.s1) as u32)))
         },
     },
@@ -3559,9 +3538,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd2000053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(f64::from(ops.s1 as i32))))
         },
     },
@@ -3571,9 +3549,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd2100053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(f64::from(ops.s1 as u32))))
         },
     },
@@ -3584,9 +3561,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc2200053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_to_f64(ops.s1) as i64))
         },
     },
@@ -3596,9 +3572,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc2300053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_xf(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_to_f64(ops.s1) as u64 as i64))
         },
     },
@@ -3619,9 +3594,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd2200053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(ops.s1 as f64)))
         },
     },
@@ -3631,9 +3605,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xd2300053,
         decode: decode_r_fx,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _uop, ops| {
-            let f = parse_format_r_fx(word);
-            cpu.check_float_access(f.funct3)?;
+        execute: |cpu, _address, _word, uop, ops| {
+            cpu.check_float_access(uop.rm)?;
             Ok(Some(op_from_f64(ops.s1 as u64 as f64)))
         },
     },
