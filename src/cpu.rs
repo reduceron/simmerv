@@ -367,12 +367,12 @@ impl Cpu {
 
         self.pc = npc;
         let reg_info = (decoded.decode)(insn);
-        let values = Operands {
+        let ops = Operands {
             s1: self.read_x(reg_info.rs1),
             s2: self.read_x(reg_info.rs2),
             s3: self.read_x(reg_info.rs3),
         };
-        if let Some(res) = (decoded.execute)(self, self.insn_addr, insn, values)? {
+        if let Some(res) = (decoded.execute)(self, self.insn_addr, insn, ops)? {
             self.write_x(reg_info.rd, res);
         } else {
             assert_eq!(reg_info.rd.get(), 64);
@@ -891,7 +891,7 @@ impl Cpu {
         assert_ne!(self.fs, 0);
         let frm = (v >> 5) & 7;
         let Some(frm) = FromPrimitive::from_i64(frm) else {
-            todo!("What is the appropriate behavior on illegal values?");
+            todo!("What is the appropriate behavior on illegal ops?");
         };
         self.write_fflags((v & 31) as u8);
         self.write_frm(frm);
@@ -2277,7 +2277,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000100f,
         decode: decode_empty,
         disassemble: disassemble_empty,
-        execute: |cpu, _address, _word, _values| {
+        execute: |cpu, _address, _word, _ops| {
             // Flush any cached instructions.  We have none so far.
             cpu.reservation = None;
             Ok(None)
@@ -2290,14 +2290,14 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_csr(word);
             let res = if f.rd.is_x0_dest() {
-                cpu.write_csr(f.csr, values.s1)?;
+                cpu.write_csr(f.csr, ops.s1)?;
                 0
             } else {
                 let v = cpu.read_csr(f.csr)?;
-                cpu.write_csr(f.csr, values.s1)?;
+                cpu.write_csr(f.csr, ops.s1)?;
                 v
             };
 
@@ -2310,11 +2310,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00002073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data | values.s1)?;
+                cpu.write_csr(f.csr, data | ops.s1)?;
             }
             Ok(Some(data))
         },
@@ -2325,11 +2325,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00003073,
         decode: decode_csr,
         disassemble: disassemble_csr,
-        execute: |cpu, _address, word, values| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)? as i64;
             if f.rs1.get() != 0 {
-                cpu.write_csr(f.csr, data & !values.s1)?;
+                cpu.write_csr(f.csr, data & !ops.s1)?;
             }
             Ok(Some(data))
         },
@@ -2340,7 +2340,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_csr(word);
 
             let res = if f.rd.is_x0_dest() {
@@ -2361,7 +2361,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
@@ -2376,7 +2376,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007073,
         decode: decode_csri,
         disassemble: disassemble_csri,
-        execute: |cpu, _address, word, _values| {
+        execute: |cpu, _address, word, _ops| {
             let f = parse_format_csr(word);
             let data = cpu.read_csr(f.csr)?;
             if f.rs1.get() != 0 {
@@ -2392,7 +2392,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02000033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| Ok(Some(values.s1.wrapping_mul(values.s2))),
+        execute: |_cpu, _address, _word, ops| Ok(Some(ops.s1.wrapping_mul(ops.s2))),
     },
     RVInsnSpec {
         name: "MULH",
@@ -2400,9 +2400,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02001033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(
-                ((i128::from(values.s1) * i128::from(values.s2)) >> 64) as i64,
+                ((i128::from(ops.s1) * i128::from(ops.s2)) >> 64) as i64,
             ))
         },
     },
@@ -2412,9 +2412,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02002033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(
-                ((values.s1 as u128).wrapping_mul(u128::from(values.s2 as u64)) >> 64) as i64,
+                ((ops.s1 as u128).wrapping_mul(u128::from(ops.s2 as u64)) >> 64) as i64,
             ))
         },
     },
@@ -2424,10 +2424,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02003033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
+        execute: |_cpu, _address, _word, ops| {
             Ok(Some(
-                (u128::from(values.s1 as u64).wrapping_mul(u128::from(values.s2 as u64)) >> 64)
-                    as i64,
+                (u128::from(ops.s1 as u64).wrapping_mul(u128::from(ops.s2 as u64)) >> 64) as i64,
             ))
         },
     },
@@ -2437,13 +2436,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02004033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 == 0 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 == 0 {
                 -1
-            } else if values.s1 == i64::MIN && values.s2 == -1 {
-                values.s1
+            } else if ops.s1 == i64::MIN && ops.s2 == -1 {
+                ops.s1
             } else {
-                values.s1.wrapping_div(values.s2)
+                ops.s1.wrapping_div(ops.s2)
             }))
         },
     },
@@ -2453,11 +2452,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02005033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 as u64 == 0 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 as u64 == 0 {
                 -1
             } else {
-                (values.s1 as u64).wrapping_div(values.s2 as u64) as i64
+                (ops.s1 as u64).wrapping_div(ops.s2 as u64) as i64
             }))
         },
     },
@@ -2467,13 +2466,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02006033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 == 0 {
-                values.s1
-            } else if values.s1 == i64::MIN && values.s2 == -1 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 == 0 {
+                ops.s1
+            } else if ops.s1 == i64::MIN && ops.s2 == -1 {
                 0
             } else {
-                values.s1.wrapping_rem(values.s2)
+                ops.s1.wrapping_rem(ops.s2)
             }))
         },
     },
@@ -2483,10 +2482,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x02007033,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(match values.s2 as u64 {
-                0 => values.s1 as u64 as i64,
-                _ => (values.s1 as u64).wrapping_rem(values.s2 as u64) as i64,
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(match ops.s2 as u64 {
+                0 => ops.s1 as u64 as i64,
+                _ => (ops.s1 as u64).wrapping_rem(ops.s2 as u64) as i64,
             }))
         },
     },
@@ -2497,10 +2496,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200003b,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(i64::from(
-                (values.s1 as i32).wrapping_mul(values.s2 as i32),
-            )))
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(i64::from((ops.s1 as i32).wrapping_mul(ops.s2 as i32))))
         },
     },
     RVInsnSpec {
@@ -2509,13 +2506,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200403b,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 as i32 == 0 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 as i32 == 0 {
                 -1
-            } else if values.s1 as i32 == i32::MIN && values.s2 as i32 == -1 {
-                i64::from(values.s1 as i32)
+            } else if ops.s1 as i32 == i32::MIN && ops.s2 as i32 == -1 {
+                i64::from(ops.s1 as i32)
             } else {
-                i64::from((values.s1 as i32).wrapping_div(values.s2 as i32))
+                i64::from((ops.s1 as i32).wrapping_div(ops.s2 as i32))
             }))
         },
     },
@@ -2525,11 +2522,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200503b,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 as u32 == 0 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 as u32 == 0 {
                 -1
             } else {
-                i64::from((values.s1 as u32).wrapping_div(values.s2 as u32) as i32)
+                i64::from((ops.s1 as u32).wrapping_div(ops.s2 as u32) as i32)
             }))
         },
     },
@@ -2539,13 +2536,13 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200603b,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(if values.s2 as i32 == 0 {
-                i64::from(values.s1 as i32)
-            } else if values.s1 as i32 == i32::MIN && values.s2 as i32 == -1 {
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(if ops.s2 as i32 == 0 {
+                i64::from(ops.s1 as i32)
+            } else if ops.s1 as i32 == i32::MIN && ops.s2 as i32 == -1 {
                 0
             } else {
-                i64::from((values.s1 as i32).wrapping_rem(values.s2 as i32))
+                i64::from((ops.s1 as i32).wrapping_rem(ops.s2 as i32))
             }))
         },
     },
@@ -2555,10 +2552,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0200703b,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |_cpu, _address, _word, values| {
-            Ok(Some(match values.s2 as u32 {
-                0 => i64::from(values.s1 as u32 as i32),
-                _ => i64::from((values.s1 as u32).wrapping_rem(values.s2 as u32) as i32),
+        execute: |_cpu, _address, _word, ops| {
+            Ok(Some(match ops.s2 as u32 {
+                0 => i64::from(ops.s1 as u32 as i32),
+                _ => i64::from((ops.s1 as u32).wrapping_rem(ops.s2 as u32) as i32),
             }))
         },
     },
@@ -2569,11 +2566,11 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x1000202f,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |cpu, _address, _word, values| {
-            let data = cpu.mmu.load_virt_u32(values.s1 as u64)? as i32;
+        execute: |cpu, _address, _word, ops| {
+            let data = cpu.mmu.load_virt_u32(ops.s1 as u64)? as i32;
             let pa = cpu
                 .mmu
-                .translate_address(values.s1 as u64, MemoryAccessType::Read, false)?;
+                .translate_address(ops.s1 as u64, MemoryAccessType::Read, false)?;
             cpu.reservation = Some(pa);
             Ok(Some(i64::from(data)))
         },
@@ -2853,10 +2850,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xc000302f,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |cpu, _address, _word, values| {
-            let tmp = cpu.mmu.load_virt_u64(values.s1 as u64)?;
-            let val = values.s2 as u64;
-            cpu.mmu.store_virt_u64(values.s1 as u64, val.min(tmp))?;
+        execute: |cpu, _address, _word, ops| {
+            let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
+            let val = ops.s2 as u64;
+            cpu.mmu.store_virt_u64(ops.s1 as u64, val.min(tmp))?;
             cpu.reservation = None;
             Ok(Some(tmp as i64))
         },
@@ -2867,10 +2864,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xe000302f,
         decode: decode_r,
         disassemble: disassemble_r,
-        execute: |cpu, _address, _word, values| {
-            let tmp = cpu.mmu.load_virt_u64(values.s1 as u64)?;
-            let val = values.s2 as u64;
-            cpu.mmu.store_virt_u64(values.s1 as u64, val.max(tmp))?;
+        execute: |cpu, _address, _word, ops| {
+            let tmp = cpu.mmu.load_virt_u64(ops.s1 as u64)?;
+            let val = ops.s2 as u64;
+            cpu.mmu.store_virt_u64(ops.s1 as u64, val.max(tmp))?;
             cpu.reservation = None;
             Ok(Some(tmp as i64))
         },
