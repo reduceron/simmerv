@@ -2190,8 +2190,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         decode: decode_ri,
         disassemble: disassemble_ri,
         execute: |_cpu, _address, word, ops| {
-            let f = parse_format_r(word);
-            Ok(Some(i64::from((ops.s1 << f.rs2.get()) as i32)))
+            Ok(Some(i64::from((ops.s1 << ((word >> 20) & 0x1f)) as i32)))
         },
     },
     RVInsnSpec {
