@@ -90,7 +90,7 @@ pub struct Operands {
 pub struct Cpu {
     // The essential CPU state
     rf: [i64; 65],
-    pc: i64,
+    pub pc: i64,
 
     // This is fcsr disaggregated
     frm: RoundingMode,
@@ -120,7 +120,7 @@ pub struct Cpu {
     pub mmu: Mmu,
 
     // Decoding table
-    decode_dag: Vec<u16>,
+    pub decode_dag: Vec<u16>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -135,12 +135,12 @@ type ExecResult = Result<Option<i64>, Exception>;
 // instructions)?
 #[allow(clippy::type_complexity)]
 #[derive(Debug)]
-struct RVInsnSpec {
+pub struct RVInsnSpec {
     name: &'static str,
     mask: u32,
     bits: u32,
-    decode: fn(word: u32) -> Uop, /* XXX may want to give it an address as well. */
-    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg,
+    pub decode: fn(word: u32) -> Uop, /* XXX may want to give it an address as well. */
+    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool),
     execute: fn(cpu: &mut Cpu, address: i64, word: u32, ops: Operands) -> ExecResult,
 }
 
@@ -358,7 +358,7 @@ impl Cpu {
 
         let (insn, npc) = decompress(self.insn_addr, word as u32);
         self.pc = npc;
-        let Ok(decoded) = decode(&self.decode_dag, insn) else {
+        let Some(decoded) = decode(&self.decode_dag, insn) else {
             return Err(Exception {
                 trap: Trap::IllegalInstruction,
                 tval: word,
@@ -808,11 +808,11 @@ impl Cpu {
     /// Disassembles an instruction pointed by Program Counter and
     /// and return the [possibly] writeback register
     #[allow(clippy::cast_sign_loss)]
-    pub fn disassemble_insn(&self, s: &mut String, addr: i64, mut word32: u32, eval: bool) -> Reg {
+    pub fn disassemble_insn(&self, s: &mut String, addr: i64, mut word32: u32, eval: bool) {
         let (insn, _) = decompress(addr, word32);
-        let Ok(decoded) = decode(&self.decode_dag, insn) else {
+        let Some(decoded) = decode(&self.decode_dag, insn) else {
             let _ = write!(s, "{addr:16x} {word32:8x} Illegal instruction");
-            return xd(0);
+            return;
         };
 
         let asm = decoded.name.to_lowercase();
@@ -823,16 +823,16 @@ impl Cpu {
             word32 &= 0xffff;
             let _ = write!(s, "{addr:16x}     {word32:04x} {asm:7} ");
         }
-        (decoded.disassemble)(s, self, addr, insn, eval)
+        (decoded.disassemble)(s, self, addr, insn, eval);
     }
 
     #[allow(clippy::cast_sign_loss)]
-    pub fn disassemble(&mut self, s: &mut String) -> Reg {
+    pub fn disassemble(&mut self, s: &mut String) {
         let Ok(word32) = self.memop_disass(self.pc) else {
             let _ = write!(s, "{:016x} <inaccessible>", self.pc);
-            return xd(0);
+            return;
         };
-        self.disassemble_insn(s, self.pc, (word32 & 0xFFFFFFFF) as u32, true)
+        self.disassemble_insn(s, self.pc, (word32 & 0xFFFFFFFF) as u32, true);
     }
 
     /// Returns mutable `Mmu`
@@ -923,7 +923,9 @@ impl Cpu {
         self.memop_general(access, baseva, offset, v, size, false)
     }
 
-    fn memop_disass(&mut self, baseva: i64) -> Result<i64, Exception> {
+    /// # Errors
+    /// Usual memory exceptions
+    pub fn memop_disass(&mut self, baseva: i64) -> Result<i64, Exception> {
         self.memop_general(Execute, baseva, 0, 0, 4, true)
     }
 
@@ -1045,7 +1047,8 @@ fn op_to_f32(v: i64) -> f32 { f32::from_bits(Sf32::unbox(v) as u32) }
 const fn op_to_f64(v: i64) -> f64 { f64::from_bits(v as u64) }
 
 #[inline]
-const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
+#[must_use]
+pub const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
     if insn & 3 == 3 {
         (insn, addr.wrapping_add(4))
     } else {
@@ -1054,12 +1057,13 @@ const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
     }
 }
 
-const fn decode(fdt: &[u16], word: u32) -> Result<&RVInsnSpec, ()> {
+#[must_use]
+pub const fn decode(fdt: &[u16], word: u32) -> Option<&RVInsnSpec> {
     let inst = &INSTRUCTIONS[dag_decoder::patmatch(fdt, word)];
     if word & inst.mask == inst.bits {
-        Ok(inst)
+        Some(inst)
     } else {
-        Err(())
+        None
     }
 }
 
@@ -1106,7 +1110,7 @@ fn parse_format_b(word: u32) -> FormatB {
     }
 }
 
-fn disassemble_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool) {
     let f = parse_format_b(word);
     *s += get_register_name(f.rs1);
     if evaluate && f.rs1.get() != 0 {
@@ -1117,7 +1121,6 @@ fn disassemble_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
-    xd(0)
 }
 
 fn decode_empty(_word: u32) -> Uop { Uop::default() }
@@ -1141,7 +1144,7 @@ fn parse_format_csr(word: u32) -> FormatCSR {
 }
 
 #[allow(clippy::option_if_let_else)] // Clippy is loosing it
-fn disassemble_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_csr(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -1170,11 +1173,10 @@ fn disassemble_csr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate
     if evaluate && f.rs1.get() != 0 {
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
-    f.rd
 }
 
 #[allow(clippy::option_if_let_else)] // Clippy is loosing it
-fn disassemble_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_csr(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -1200,7 +1202,6 @@ fn disassemble_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     }
 
     let _ = write!(s, ", {}", f.rs1.get());
-    f.rd
 }
 
 fn decode_csr(word: u32) -> Uop {
@@ -1240,7 +1241,7 @@ fn parse_format_i_fx(word: u32) -> FormatI {
     }
 }
 
-fn disassemble_i(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_i(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_i(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {}", get_register_name(f.rs1));
@@ -1248,10 +1249,9 @@ fn disassemble_i(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     let _ = write!(s, ", {:x}", f.imm);
-    f.rd
 }
 
-fn disassemble_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_i(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}({}", f.imm, get_register_name(f.rs1));
@@ -1259,7 +1259,6 @@ fn disassemble_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     *s += ")";
-    f.rd
 }
 
 fn decode_i(word: u32) -> Uop {
@@ -1292,11 +1291,10 @@ fn parse_format_j(word: u32) -> FormatJ {
     }
 }
 
-fn disassemble_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate: bool) -> Reg {
+fn disassemble_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate: bool) {
     let f = parse_format_j(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
-    f.rd
 }
 
 fn decode_j(word: u32) -> Uop {
@@ -1363,7 +1361,7 @@ fn parse_format_r_fff(word: u32) -> FormatR {
     }
 }
 
-fn disassemble_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_r(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -1375,7 +1373,6 @@ fn disassemble_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     if evaluate && f.rs2.get() != 0 {
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
-    f.rd
 }
 
 fn decode_r(word: u32) -> Uop {
@@ -1426,7 +1423,7 @@ fn decode_r_fff(word: u32) -> Uop {
     }
 }
 
-fn disassemble_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_r(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", ");
@@ -1436,7 +1433,6 @@ fn disassemble_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     }
     let shamt = (word >> 20) & 63;
     let _ = write!(s, ", {shamt}");
-    f.rd
 }
 
 fn decode_ri(word: u32) -> Uop {
@@ -1448,7 +1444,7 @@ fn decode_ri(word: u32) -> Uop {
     }
 }
 
-fn disassemble_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_r(word);
     let _ = write!(s, "{}, ", get_register_name(f.rd));
     *s += get_register_name(f.rs1);
@@ -1459,7 +1455,6 @@ fn disassemble_r_f(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate
     if evaluate && f.rs2.get() != 0 {
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs2));
     }
-    f.rd
 }
 
 fn parse_format_r2_ffff(word: u32) -> FormatR2 {
@@ -1472,7 +1467,7 @@ fn parse_format_r2_ffff(word: u32) -> FormatR2 {
     }
 }
 
-fn disassemble_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_r2_ffff(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {}", get_register_name(f.rs1));
@@ -1487,7 +1482,6 @@ fn disassemble_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     if evaluate {
         let _ = write!(s, ":{:x}", cpu.read_f(f.rs3));
     }
-    f.rd
 }
 
 fn decode_r2_ffff(word: u32) -> Uop {
@@ -1537,7 +1531,7 @@ fn parse_format_s_xf(word: u32) -> FormatS {
     }
 }
 
-fn disassemble_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_s(word);
     *s += get_register_name(f.rs2);
     if evaluate && f.rs2.get() != 0 {
@@ -1548,7 +1542,6 @@ fn disassemble_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     *s += ")";
-    xd(0)
 }
 
 fn decode_s(word: u32) -> Uop {
@@ -1577,26 +1570,23 @@ fn parse_format_u(word: u32) -> FormatU {
     }
 }
 
-fn disassemble_u(s: &mut String, _cpu: &Cpu, _address: i64, word: u32, _evaluate: bool) -> Reg {
+fn disassemble_u(s: &mut String, _cpu: &Cpu, _address: i64, word: u32, _evaluate: bool) {
     let f = parse_format_u(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}", f.imm);
-
-    f.rd
 }
 
 #[allow(clippy::ptr_arg)] // Clippy can't tell that we can't change the function type
-fn disassemble_empty(
+const fn disassemble_empty(
     _s: &mut String,
     _cpu: &Cpu,
     _address: i64,
     _word: u32,
     _evaluate: bool,
-) -> Reg {
-    xd(0)
+) {
 }
 
-fn disassemble_jalr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) -> Reg {
+fn disassemble_jalr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: bool) {
     let f = parse_format_i(word);
     *s += get_register_name(f.rd);
     let _ = write!(s, ", {:x}({}", f.imm, get_register_name(f.rs1));
@@ -1604,7 +1594,6 @@ fn disassemble_jalr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
         let _ = write!(s, ":{:x}", cpu.read_x(f.rs1));
     }
     *s += ")";
-    f.rd
 }
 
 fn decode_u(word: u32) -> Uop {
@@ -1653,7 +1642,7 @@ impl Cpu {
     /// decoded.
     pub fn get_register_info(&self, insn: u32) -> anyhow::Result<Uop> {
         let (insn, _) = decompress(0, insn);
-        let Ok(decoded) = decode(&self.decode_dag, insn) else {
+        let Some(decoded) = decode(&self.decode_dag, insn) else {
             bail!("Illegal instruction");
         };
 

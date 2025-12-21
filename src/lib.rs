@@ -100,15 +100,29 @@ impl Emulator {
         let mut s = String::new();
         loop {
             s.clear();
-            let wbr = self.cpu.disassemble(&mut s);
+            // XXX might make sense to return the instruction
             let exceptional = self.tick(1);
             let cycle = self.cpu.cycle;
             print!("{cycle:5} {:1} {s:72}", u64::from(self.cpu.mmu.prv));
-            if wbr.is_x0_dest() || exceptional {
-                println!();
+
+            if let Ok(word32) = self.cpu.memop_disass(self.cpu.pc) {
+                #[allow(clippy::cast_sign_loss)]
+                let (insn, _) = cpu::decompress(self.cpu.pc, word32 as u32);
+                if let Some(decoded) = cpu::decode(&self.cpu.decode_dag, insn) {
+                    let uop = (decoded.decode)(insn);
+                    let wbr = uop.rd;
+                    if wbr.is_x0_dest() || exceptional {
+                        println!();
+                    } else {
+                        println!("{:16x}", self.cpu.read_register(wbr));
+                    }
+                } else {
+                    println!();
+                }
             } else {
-                println!("{:16x}", self.cpu.read_register(wbr));
+                println!();
             }
+
             //let _ = io::stdout().flush();
 
             if self.handle_htif() {
