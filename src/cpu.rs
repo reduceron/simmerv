@@ -175,6 +175,12 @@ struct FormatR {
     rs2: Reg,
 }
 
+struct FormatRShift {
+    rd: Reg,
+    rs1: Reg,
+    imm: u8,
+}
+
 struct FormatS {
     rs1: Reg,
     rs2: Reg,
@@ -1078,9 +1084,9 @@ pub fn x(r: u32) -> Reg {
 #[must_use]
 pub fn xd(r: u32) -> Reg {
     assert!(r < 32);
-    // Remap x0 to the burn location 64.  This turns the write
-    // into branch-free code, but the real payoff will come later
-    // when we amortize this
+    // Remap x0 to the dummy location 64.  This turns the write into
+    // branch-free code, but the real payoff will come later when we
+    // amortize this
     Reg::new(((r + 63) & 63) + 1)
 }
 
@@ -1312,6 +1318,15 @@ fn parse_format_r(word: u32) -> FormatR {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
+fn parse_format_r_shift(word: u32) -> FormatRShift {
+    FormatRShift {
+        rd: xd((word >> 7) & 0x1f),     // [11:7]
+        rs1: x((word >> 15) & 0x1f),    // [19:15]
+        imm: (word >> 20) as u8 & 0x3f, // [25:20]
+    }
+}
+
 fn parse_format_r_xf(word: u32) -> FormatR {
     FormatR {
         rd: xd((word >> 7) & 0x1f),          // [11:7]
@@ -1431,8 +1446,8 @@ fn disassemble_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     let _ = write!(s, ", {shamt}");
 }
 
-fn decode_ri(word: u32) -> Uop {
-    let f = parse_format_r(word);
+fn decode_r_shift(word: u32) -> Uop {
+    let f = parse_format_r_shift(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
@@ -2136,27 +2151,34 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "SLLI",
         mask: 0xfc00707f, // RV64I version!
         bits: 0x00001013,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 << ((word >> 20) & 0x3f))),
+        execute: |_cpu, _address, word, ops| {
+            let f = parse_format_r_shift(word);
+            Ok(Some(ops.s1 << f.imm))
+        },
     },
     RVInsnSpec {
         name: "SRLI",
         mask: 0xfc00707f,
         bits: 0x00005013,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
         execute: |_cpu, _address, word, ops| {
-            Ok(Some(((ops.s1 as u64) >> ((word >> 20) & 0x3f)) as i64))
+            let f = parse_format_r_shift(word);
+            Ok(Some(((ops.s1 as u64) >> f.imm) as i64))
         },
     },
     RVInsnSpec {
         name: "SRAI",
         mask: 0xfc00707f,
         bits: 0x40005013,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
-        execute: |_cpu, _address, word, ops| Ok(Some(ops.s1 >> ((word >> 20) & 0x3f))),
+        execute: |_cpu, _address, word, ops| {
+            let f = parse_format_r_shift(word);
+            Ok(Some(ops.s1 >> f.imm))
+        },
     },
     RVInsnSpec {
         name: "ADDIW",
@@ -2173,32 +2195,33 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "SLLIW",
         mask: 0xfe00707f,
         bits: 0x0000101b,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
         execute: |_cpu, _address, word, ops| {
-            Ok(Some(i64::from((ops.s1 << ((word >> 20) & 0x1f)) as i32)))
+            let f = parse_format_r_shift(word);
+            Ok(Some(i64::from((ops.s1 as i32) << (f.imm & 31))))
         },
     },
     RVInsnSpec {
         name: "SRLIW",
         mask: 0xfe00707f,
         bits: 0x0000501b,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
         execute: |_cpu, _address, word, ops| {
-            Ok(Some(i64::from(
-                ((ops.s1 as u32) >> ((word >> 20) & 0x1f)) as i32,
-            )))
+            let f = parse_format_r_shift(word);
+            Ok(Some(i64::from(((ops.s1 as u32) >> (f.imm & 31)) as i32)))
         },
     },
     RVInsnSpec {
         name: "SRAIW",
         mask: 0xfe00707f,
         bits: 0x4000501b,
-        decode: decode_ri,
+        decode: decode_r_shift,
         disassemble: disassemble_ri,
         execute: |_cpu, _address, word, ops| {
-            Ok(Some(i64::from((ops.s1 as i32) >> ((word >> 20) & 0x1f))))
+            let f = parse_format_r_shift(word);
+            Ok(Some(i64::from((ops.s1 as i32) >> (f.imm & 31))))
         },
     },
     RVInsnSpec {
