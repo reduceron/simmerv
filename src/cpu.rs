@@ -3033,10 +3033,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
+            let rs1_bits = Sf32::unbox(ops.s1);
             let rs2_bits = Sf32::unbox(ops.s2);
             let sign_bit = rs2_bits & (0x80000000u64 as i64);
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
@@ -3048,10 +3047,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20001053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
+            let rs1_bits = Sf32::unbox(ops.s1);
             let rs2_bits = Sf32::unbox(ops.s2);
             let sign_bit = !rs2_bits & (0x80000000u64 as i64);
             Ok(Some(fp::NAN_BOX_F32 | sign_bit | (rs1_bits & 0x7fffffff)))
@@ -3063,10 +3061,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x20002053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = Sf32::unbox(cpu.read_f(f.rs1));
+            let rs1_bits = Sf32::unbox(ops.s1);
             let rs2_bits = Sf32::unbox(ops.s2);
             let sign_bit = rs2_bits & (0x80000000u64 as i64);
             Ok(Some(fp::NAN_BOX_F32 | (sign_bit ^ rs1_bits)))
@@ -3126,10 +3123,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xe0000053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _ops| {
-            let f = parse_format_r_xf(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            Ok(Some(i64::from(cpu.read_f(f.rs1) as i32)))
+            Ok(Some(i64::from(ops.s1 as i32)))
         },
     },
     RVInsnSpec {
@@ -3138,10 +3134,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa0002053,
         decode: decode_r_xff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::feq(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf32::feq(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
             Ok(Some(i64::from(r)))
         },
@@ -3152,10 +3147,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa0001053,
         decode: decode_r_xff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::flt(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf32::flt(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
             Ok(Some(i64::from(r)))
         },
@@ -3166,10 +3160,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa0000053,
         decode: decode_r_xff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf32::fle(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf32::fle(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
             Ok(Some(i64::from(r)))
         },
@@ -3180,10 +3173,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xe0001053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _ops| {
-            let f = parse_format_r_xf(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            Ok(Some(1 << Sf32::fclass(cpu.read_f(f.rs1)) as usize))
+            Ok(Some(1 << Sf32::fclass(ops.s1) as usize))
         },
     },
     RVInsnSpec {
@@ -3443,10 +3435,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x22000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = cpu.read_f(f.rs1);
+            let rs1_bits = ops.s1;
             let rs2_bits = ops.s2;
             let sign_bit = rs2_bits & (0x8000000000000000u64 as i64);
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
@@ -3458,10 +3449,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x22001053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = cpu.read_f(f.rs1);
+            let rs1_bits = ops.s1;
             let rs2_bits = ops.s2;
             let sign_bit = !rs2_bits & (0x8000000000000000u64 as i64);
             Ok(Some(sign_bit | (rs1_bits & 0x7fffffffffffffff)))
@@ -3473,10 +3463,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x22002053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_fff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let rs1_bits = cpu.read_f(f.rs1);
+            let rs1_bits = ops.s1;
             let rs2_bits = ops.s2;
             let sign_bit = rs2_bits & (0x8000000000000000u64 as i64);
             Ok(Some(sign_bit ^ rs1_bits))
@@ -3524,10 +3513,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x42000053,
         decode: decode_r_fff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _ops| {
+        execute: |cpu, _address, word, ops| {
             let f = parse_format_r_fff(word);
             cpu.check_float_access(f.funct3)?;
-            let (v, fflags) = fp::fcvt_d_s(cpu.read_f(f.rs1));
+            let (v, fflags) = fp::fcvt_d_s(ops.s1);
             cpu.add_to_fflags(fflags);
             Ok(Some(v))
         },
@@ -3538,10 +3527,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa2002053,
         decode: decode_r_xff,
         disassemble: disassemble_empty,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::feq(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf64::feq(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
 
             Ok(Some(i64::from(r)))
@@ -3553,10 +3541,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa2001053,
         decode: decode_r_xff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::flt(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf64::flt(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
             Ok(Some(i64::from(r)))
         },
@@ -3567,10 +3554,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xa2000053,
         decode: decode_r_xff,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, ops| {
-            let f = parse_format_r_xff(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            let (r, fflags) = Sf64::fle(cpu.read_f(f.rs1), ops.s2);
+            let (r, fflags) = Sf64::fle(ops.s1, ops.s2);
             cpu.add_to_fflags(fflags);
             Ok(Some(i64::from(r)))
         },
@@ -3581,10 +3567,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xe2001053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _ops| {
-            let f = parse_format_r_xf(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            Ok(Some(1 << Sf64::fclass(cpu.read_f(f.rs1)) as usize))
+            Ok(Some(1 << Sf64::fclass(ops.s1) as usize))
         },
     },
     RVInsnSpec {
@@ -3666,10 +3651,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0xe2000053,
         decode: decode_r_xf,
         disassemble: disassemble_r,
-        execute: |cpu, _address, word, _ops| {
-            let f = parse_format_r_xf(word);
+        execute: |cpu, _address, _word, ops| {
             cpu.check_float_access(0)?;
-            Ok(Some(cpu.read_f(f.rs1)))
+            Ok(Some(ops.s1))
         },
     },
     RVInsnSpec {
