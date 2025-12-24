@@ -377,8 +377,7 @@ impl Cpu {
             });
         };
 
-        let uop = (decoded.decode)(self.pc, insn);
-        self.pc = npc;
+        let uop = (decoded.decode)(self.insn_addr, insn);
         let ops = Operands {
             s1: self.read_x(uop.rs1),
             s2: self.read_x(uop.rs2),
@@ -1625,6 +1624,15 @@ fn decode_u(_addr: i64, word: u32) -> Uop {
     }
 }
 
+fn decode_auipc(addr: i64, word: u32) -> Uop {
+    let f = parse_format_u(word);
+    Uop {
+        rd: f.rd,
+        imm: addr.wrapping_add(f.imm),
+        ..Uop::default()
+    }
+}
+
 fn decode_serialized(_addr: i64, word: u32) -> Uop {
     Uop {
         imm: i64::from(word),
@@ -1694,9 +1702,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         name: "AUIPC",
         mask: 0x0000007f,
         bits: 0x00000017,
-        decode: decode_u,
+        decode: decode_auipc,
         disassemble: disassemble_u,
-        execute: |_cpu, address, uop, _ops| Ok(Some(address.wrapping_add(uop.imm))),
+        execute: |_cpu, _address, uop, _ops| Ok(Some(uop.imm)),
     },
     RVInsnSpec {
         name: "JAL",
