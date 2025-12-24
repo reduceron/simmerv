@@ -110,7 +110,7 @@ impl Emulator {
                 #[allow(clippy::cast_sign_loss)]
                 let (insn, _) = cpu::decompress(self.cpu.pc, word32 as u32);
                 if let Some(decoded) = cpu::decode(&self.cpu.decode_dag, insn) {
-                    let uop = (decoded.decode)(insn);
+                    let uop = (decoded.decode)(self.cpu.pc, insn);
                     let wbr = uop.rd;
                     if wbr.is_x0_dest() || exceptional {
                         println!();
