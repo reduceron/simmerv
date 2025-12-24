@@ -1129,12 +1129,12 @@ fn disassemble_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
 
 fn decode_empty(_addr: i64, _word: u32) -> Uop { Uop::default() }
 
-fn decode_b(_addr: i64, word: u32) -> Uop {
+fn decode_b(addr: i64, word: u32) -> Uop {
     let f = parse_format_b(word);
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
-        imm: f.imm,
+        imm: addr.wrapping_add(f.imm),
         ctf: true,
         ..Uop::default()
     }
@@ -1307,13 +1307,13 @@ fn disassemble_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
 }
 
-fn decode_j(_addr: i64, word: u32) -> Uop {
+fn decode_j(addr: i64, word: u32) -> Uop {
     let f = parse_format_j(word);
     // JAL reads PC, but not a general purpose register
     Uop {
         rd: f.rd,
         ctf: true,
-        imm: f.imm,
+        imm: addr.wrapping_add(f.imm),
         ..Uop::default()
     }
 }
@@ -1712,9 +1712,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x0000006f,
         decode: decode_j,
         disassemble: disassemble_j,
-        execute: |cpu, address, uop, _ops| {
+        execute: |cpu, _address, uop, _ops| {
             let tmp = cpu.pc;
-            cpu.pc = address.wrapping_add(uop.imm);
+            cpu.pc = uop.imm;
             Ok(Some(tmp))
         },
     },
@@ -1736,9 +1736,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if ops.s1 == ops.s2 {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -1749,9 +1749,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00001063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if ops.s1 != ops.s2 {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -1762,9 +1762,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00004063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if ops.s1 < ops.s2 {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -1775,9 +1775,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00005063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if ops.s1 >= ops.s2 {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -1788,9 +1788,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00006063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if (ops.s1 as u64) < (ops.s2 as u64) {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -1801,9 +1801,9 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00007063,
         decode: decode_b,
         disassemble: disassemble_b,
-        execute: |cpu, address, uop, ops| {
+        execute: |cpu, _address, uop, ops| {
             if (ops.s1 as u64) >= (ops.s2 as u64) {
-                cpu.pc = address.wrapping_add(uop.imm);
+                cpu.pc = uop.imm;
             }
             Ok(None)
         },
@@ -2063,7 +2063,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         bits: 0x00000073,
         decode: decode_exceptional,
         disassemble: disassemble_empty,
-        execute: |cpu, address, _uop, _ops| {
+        execute: |cpu, _address, uop, _ops| {
             let trap_type = match cpu.mmu.prv {
                 PrivMode::U => Trap::EnvironmentCallFromUMode,
                 PrivMode::S => Trap::EnvironmentCallFromSMode,
@@ -2071,7 +2071,7 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
             };
             Err(Exception {
                 trap: trap_type,
-                tval: address,
+                tval: uop.imm,
             })
         },
     },
