@@ -35,11 +35,15 @@ use terminal::Terminal;
 
 pub type Reg = Bounded<65>;
 
+// Type aliases for clarity
+pub type ExecFn = fn(cpu: &mut Cpu, uop: &Uop, ops: Operands) -> ExecResult;
+pub type DecodeFn = fn(addr: i64, word: u32, exec: ExecFn) -> Uop;
+
 /// The decoded instruction, convenient for execution
-// XXX Needs Seqno, ctf_target_opt, execute (either fn or enum).
+// XXX Needs Seqno, ctf_target_opt
 // XXX ctf, exceptional, serialize (and more?) should be combined into a classification represented
 // as an enum. We also want to easily distinguish ALU, ALUFP, CTF, LOAD, STORE, ATOMIC, SYSTEM, ...?
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Uop {
     /// Destination Register
     pub rd: Reg,
@@ -60,6 +64,8 @@ pub struct Uop {
     /// Serialized instructions cannot execute out-of-order and
     /// almost certainly change system state
     pub serialize: bool,
+    /// Execute function for this instruction
+    pub execute: ExecFn,
 }
 
 /// Holds information about registers used by an instruction.
@@ -135,17 +141,18 @@ pub struct Exception {
 
 type ExecResult = Result<Option<i64>, Exception>;
 
+#[allow(clippy::type_complexity)]
+/// Instruction specification
 // XXX do we need an execute_s for serialized execution (all the non-trivial
 // instructions)?
-#[allow(clippy::type_complexity)]
 #[derive(Debug)]
 pub struct RVInsnSpec {
-    name: &'static str,
-    mask: u32,
-    bits: u32,
-    pub decode: fn(addr: i64, word: u32) -> Uop,
-    disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool),
-    execute: fn(cpu: &mut Cpu, uop: &Uop, ops: Operands) -> ExecResult,
+    pub name: &'static str,
+    pub mask: u32,
+    pub bits: u32,
+    pub decode: DecodeFn,
+    pub disassemble: fn(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: bool),
+    pub execute: ExecFn, // Still stored here for passing to decode
 }
 
 struct FormatB {
@@ -216,6 +223,9 @@ impl Reg {
     pub const fn is_x0_dest(self) -> bool { self.get() == 64 }
 }
 
+// Default Uop needs a default execute function
+fn default_execute(_cpu: &mut Cpu, _uop: &Uop, _ops: Operands) -> ExecResult { unreachable!() }
+
 impl Default for Uop {
     fn default() -> Self {
         Self {
@@ -228,6 +238,7 @@ impl Default for Uop {
             ctf: false,
             exceptional: false,
             serialize: false,
+            execute: default_execute,
         }
     }
 }
@@ -362,7 +373,7 @@ impl Cpu {
 
         self.seqno = self.seqno.wrapping_add(1);
         self.insn_addr = self.pc;
-        // Exception was triggered
+
         // XXX For full correctness we mustn't fail if we _can_ fetch 16-bit
         // _and_ it turns out to be a legal instruction.
         let word = self.memop(Execute, self.insn_addr, 0, 0, 4)?;
@@ -370,6 +381,7 @@ impl Cpu {
 
         let (insn, npc) = decompress(self.insn_addr, word as u32);
         self.pc = npc;
+
         let Some(decoded) = decode(&self.decode_dag, insn) else {
             return Err(Exception {
                 trap: Trap::IllegalInstruction,
@@ -377,13 +389,13 @@ impl Cpu {
             });
         };
 
-        let uop = (decoded.decode)(self.insn_addr, insn);
+        let uop = (decoded.decode)(self.insn_addr, insn, decoded.execute);
         let ops = Operands {
             s1: self.read_x(uop.rs1),
             s2: self.read_x(uop.rs2),
             s3: self.read_x(uop.rs3),
         };
-        if let Some(res) = (decoded.execute)(self, &uop, ops)? {
+        if let Some(res) = (uop.execute)(self, &uop, ops)? {
             self.write_x(uop.rd, res);
         } else {
             assert_eq!(uop.rd.get(), 64);
@@ -1127,15 +1139,21 @@ fn disassemble_b(s: &mut String, cpu: &Cpu, address: i64, word: u32, evaluate: b
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
 }
 
-fn decode_empty(_addr: i64, _word: u32) -> Uop { Uop::default() }
+fn decode_empty(_addr: i64, _word: u32, execute: ExecFn) -> Uop {
+    Uop {
+        execute,
+        ..Uop::default()
+    }
+}
 
-fn decode_b(addr: i64, word: u32) -> Uop {
+fn decode_b(addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_b(word);
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
         imm: addr.wrapping_add(f.imm),
         ctf: true,
+        execute,
         ..Uop::default()
     }
 }
@@ -1209,24 +1227,26 @@ fn disassemble_csri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     let _ = write!(s, ", {}", f.rs1.get());
 }
 
-fn decode_csr(_addr: i64, word: u32) -> Uop {
+fn decode_csr(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_csr(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         imm: i64::from(f.csr),
         serialize: true,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_csri(_addr: i64, word: u32) -> Uop {
+fn decode_csri(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_csr(word); // uimm is not a register read
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         imm: i64::from(f.csr),
         serialize: true,
+        execute,
         ..Uop::default()
     }
 }
@@ -1269,22 +1289,24 @@ fn disassemble_i_mem(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evalua
     *s += ")";
 }
 
-fn decode_i(_addr: i64, word: u32) -> Uop {
+fn decode_i(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_i(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         imm: f.imm,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_i_fx(_addr: i64, word: u32) -> Uop {
+fn decode_i_fx(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_i_fx(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         imm: f.imm,
+        execute,
         ..Uop::default()
     }
 }
@@ -1307,13 +1329,13 @@ fn disassemble_j(s: &mut String, _cpu: &Cpu, address: i64, word: u32, _evaluate:
     let _ = write!(s, ", {:x}", address.wrapping_add(f.imm));
 }
 
-fn decode_j(addr: i64, word: u32) -> Uop {
+fn decode_j(addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_j(word);
-    // JAL reads PC, but not a general purpose register
     Uop {
         rd: f.rd,
         ctf: true,
         imm: addr.wrapping_add(f.imm),
+        execute,
         ..Uop::default()
     }
 }
@@ -1386,47 +1408,51 @@ fn disassemble_r(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     }
 }
 
-fn decode_r(_addr: i64, word: u32) -> Uop {
+fn decode_r(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_r_xf(_addr: i64, word: u32) -> Uop {
+fn decode_r_xf(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r_xf(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_r_xff(_addr: i64, word: u32) -> Uop {
+fn decode_r_xff(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r_xff(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         rs2: f.rs2,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_r_fx(_addr: i64, word: u32) -> Uop {
+fn decode_r_fx(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r_fx(word);
     #[allow(clippy::cast_possible_truncation)]
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         rm: (f.funct3 & 7) as u8,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_r_fff(_addr: i64, word: u32) -> Uop {
+fn decode_r_fff(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r_fff(word);
     #[allow(clippy::cast_possible_truncation)]
     Uop {
@@ -1434,6 +1460,7 @@ fn decode_r_fff(_addr: i64, word: u32) -> Uop {
         rs1: f.rs1,
         rs2: f.rs2,
         rm: (f.funct3 & 7) as u8,
+        execute,
         ..Uop::default()
     }
 }
@@ -1450,12 +1477,13 @@ fn disassemble_ri(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate:
     let _ = write!(s, ", {shamt}");
 }
 
-fn decode_r_shift(_addr: i64, word: u32) -> Uop {
+fn decode_r_shift(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r_shift(word);
     Uop {
         rd: f.rd,
         rs1: f.rs1,
         imm: i64::from(f.imm),
+        execute,
         ..Uop::default()
     }
 }
@@ -1500,7 +1528,7 @@ fn disassemble_r2_ffff(s: &mut String, cpu: &Cpu, _address: i64, word: u32, eval
     }
 }
 
-fn decode_r2_ffff(_addr: i64, word: u32) -> Uop {
+fn decode_r2_ffff(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_r2_ffff(word);
     Uop {
         rd: f.rd,
@@ -1508,6 +1536,7 @@ fn decode_r2_ffff(_addr: i64, word: u32) -> Uop {
         rs2: f.rs2,
         rs3: f.rs3,
         rm: f.rm,
+        execute,
         ..Uop::default()
     }
 }
@@ -1561,22 +1590,24 @@ fn disassemble_s(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluate: 
     *s += ")";
 }
 
-fn decode_s(_addr: i64, word: u32) -> Uop {
+fn decode_s(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_s(word);
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
         imm: f.imm,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_s_xf(_addr: i64, word: u32) -> Uop {
+fn decode_s_xf(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_s_xf(word);
     Uop {
         rs1: f.rs1,
         rs2: f.rs2,
         imm: f.imm,
+        execute,
         ..Uop::default()
     }
 }
@@ -1615,39 +1646,43 @@ fn disassemble_jalr(s: &mut String, cpu: &Cpu, _address: i64, word: u32, evaluat
     *s += ")";
 }
 
-fn decode_u(_addr: i64, word: u32) -> Uop {
+fn decode_u(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_u(word);
     Uop {
         rd: f.rd,
         imm: f.imm,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_auipc(addr: i64, word: u32) -> Uop {
+fn decode_auipc(addr: i64, word: u32, execute: ExecFn) -> Uop {
     let f = parse_format_u(word);
     Uop {
         rd: f.rd,
         imm: addr.wrapping_add(f.imm),
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_serialized(_addr: i64, word: u32) -> Uop {
+fn decode_serialized(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     Uop {
         imm: i64::from(word),
         ctf: true,
         serialize: true,
+        execute,
         ..Uop::default()
     }
 }
 
-fn decode_exceptional(_addr: i64, word: u32) -> Uop {
+fn decode_exceptional(_addr: i64, word: u32, execute: ExecFn) -> Uop {
     Uop {
         imm: i64::from(word),
         ctf: true,
         exceptional: true,
         serialize: true,
+        execute,
         ..Uop::default()
     }
 }
@@ -1677,7 +1712,7 @@ impl Cpu {
             bail!("Illegal instruction");
         };
 
-        Ok((decoded.decode)(addr, insn))
+        Ok((decoded.decode)(addr, insn, default_execute))
     }
 }
 
