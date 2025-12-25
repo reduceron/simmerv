@@ -64,6 +64,8 @@ pub struct Uop {
     /// Serialized instructions cannot execute out-of-order and
     /// almost certainly change system state
     pub serialize: bool,
+    /// Size of the original instruction
+    pub insn_size: u8,
     /// Execute function for this instruction
     pub execute: ExecFn,
 }
@@ -128,6 +130,9 @@ pub struct Cpu {
 
     // Holds all memory and devices (XXX: this public mmu suggests we need to rethink the API)
     pub mmu: Mmu,
+
+    // HACK
+    pub flush_icache: bool,
 
     // Decoding table
     pub decode_dag: Vec<u16>,
@@ -238,6 +243,7 @@ impl Default for Uop {
             ctf: false,
             exceptional: false,
             serialize: false,
+            insn_size: 0,
             execute: default_execute,
         }
     }
@@ -278,6 +284,7 @@ impl Cpu {
             csr: vec![0; 4096].into_boxed_slice(), // XXX MUST GO AWAY SOON
             mmu,
             reservation: None,
+            flush_icache: false,
             decode_dag: dag_decoder::new(&patterns),
         };
         log::info!("FDT is {} entries", cpu.decode_dag.len());
@@ -343,9 +350,13 @@ impl Cpu {
     /// Runs program N cycles. Fetch, decode, and execution are completed in a
     /// cycle so far.
     #[allow(clippy::cast_sign_loss)]
-    pub fn run_soc(&mut self, cpu_steps: usize) -> bool {
+    pub fn run_soc(
+        &mut self,
+        cpu_steps: usize,
+        uop_cache: &mut std::collections::HashMap<i64, Uop>,
+    ) -> bool {
         for _ in 0..cpu_steps {
-            if let Err(exc) = self.step_cpu() {
+            if let Err(exc) = self.step_cpu(uop_cache) {
                 self.handle_exception(&exc);
                 return true;
             }
@@ -362,7 +373,16 @@ impl Cpu {
 
     // It's here, the One Key Function.  This is where it all happens!
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    fn step_cpu(&mut self) -> Result<(), Exception> {
+    fn step_cpu(
+        &mut self,
+        uop_cache: &mut std::collections::HashMap<i64, Uop>,
+    ) -> Result<(), Exception> {
+        if self.flush_icache {
+            log::debug!("uop cache flush");
+            uop_cache.clear();
+            self.flush_icache = false;
+        }
+
         self.cycle = self.cycle.wrapping_add(1);
         if self.wfi {
             if self.mmu.mip & self.read_csr_raw(Csr::Mie) != 0 {
@@ -374,31 +394,54 @@ impl Cpu {
         self.seqno = self.seqno.wrapping_add(1);
         self.insn_addr = self.pc;
 
-        // XXX For full correctness we mustn't fail if we _can_ fetch 16-bit
-        // _and_ it turns out to be a legal instruction.
-        let word = self.memop(Execute, self.insn_addr, 0, 0, 4)?;
-        self.insn = word as u32;
+        // XXX refactoring needed
+        if let Some(uop) = uop_cache.get(&self.pc) {
+            log::debug!("uop cache {:x} hit", self.pc);
 
-        let (insn, npc) = decompress(self.insn_addr, word as u32);
-        self.pc = npc;
-
-        let Some(decoded) = decode(&self.decode_dag, insn) else {
-            return Err(Exception {
-                trap: Trap::IllegalInstruction,
-                tval: word,
-            });
-        };
-
-        let uop = (decoded.decode)(self.insn_addr, insn, decoded.execute);
-        let ops = Operands {
-            s1: self.read_x(uop.rs1),
-            s2: self.read_x(uop.rs2),
-            s3: self.read_x(uop.rs3),
-        };
-        if let Some(res) = (uop.execute)(self, &uop, ops)? {
-            self.write_x(uop.rd, res);
+            self.pc += i64::from(uop.insn_size);
+            let ops = Operands {
+                s1: self.read_x(uop.rs1),
+                s2: self.read_x(uop.rs2),
+                s3: self.read_x(uop.rs3),
+            };
+            if let Some(res) = (uop.execute)(self, uop, ops)? {
+                self.write_x(uop.rd, res);
+            } else {
+                assert_eq!(uop.rd.get(), 64);
+            }
         } else {
-            assert_eq!(uop.rd.get(), 64);
+            // XXX For full correctness we mustn't fail if we _can_ fetch 16-bit
+            // _and_ it turns out to be a legal instruction.
+            let word = self.memop(Execute, self.insn_addr, 0, 0, 4)?;
+
+            let (insn, insn_size) = decompress(word as u32);
+            self.insn = word as u32;
+
+            self.pc += i64::from(insn_size);
+
+            let Some(decoded) = decode(&self.decode_dag, insn) else {
+                return Err(Exception {
+                    trap: Trap::IllegalInstruction,
+                    tval: word,
+                });
+            };
+
+            let mut uop = (decoded.decode)(self.insn_addr, insn, decoded.execute);
+            uop.insn_size = insn_size;
+
+            log::debug!("uop cache add {:x}", self.insn_addr);
+            uop_cache.insert(self.insn_addr, uop);
+
+            let ops = Operands {
+                s1: self.read_x(uop.rs1),
+                s2: self.read_x(uop.rs2),
+                s3: self.read_x(uop.rs3),
+            };
+            if let Some(res) = (uop.execute)(self, &uop, ops)? {
+                self.write_x(uop.rd, res);
+            } else {
+                assert_eq!(uop.rd.get(), 64);
+            }
         }
         Ok(())
     }
@@ -832,7 +875,7 @@ impl Cpu {
     /// and return the [possibly] writeback register
     #[allow(clippy::cast_sign_loss)]
     pub fn disassemble_insn(&self, s: &mut String, addr: i64, mut word32: u32, eval: bool) {
-        let (insn, _) = decompress(addr, word32);
+        let (insn, _) = decompress(word32);
         let Some(decoded) = decode(&self.decode_dag, insn) else {
             let _ = write!(s, "{addr:16x} {word32:8x} Illegal instruction");
             return;
@@ -1064,12 +1107,12 @@ const fn op_to_f64(v: i64) -> f64 { f64::from_bits(v as u64) }
 
 #[inline]
 #[must_use]
-pub const fn decompress(addr: i64, insn: u32) -> (u32, i64) {
+pub const fn decompress(insn: u32) -> (u32, u8) {
     if insn & 3 == 3 {
-        (insn, addr.wrapping_add(4))
+        (insn, 4)
     } else {
         let insn = rvc::RVC64_EXPANDED[insn as usize & 0xffff];
-        (insn, addr.wrapping_add(2))
+        (insn, 2)
     }
 }
 
@@ -1707,7 +1750,7 @@ impl Cpu {
     /// Returns `Err(())` if the instruction word is illegal or cannot be
     /// decoded.
     pub fn get_register_info(&self, addr: i64, insn: u32) -> anyhow::Result<Uop> {
-        let (insn, _) = decompress(0, insn);
+        let (insn, _) = decompress(insn);
         let Some(decoded) = decode(&self.decode_dag, insn) else {
             bail!("Illegal instruction");
         };
@@ -2269,6 +2312,8 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
         execute: |cpu, _uop, _ops| {
             // Flush any cached instructions.  We have none so far.
             cpu.reservation = None;
+            // HACK
+            cpu.flush_icache = true;
             Ok(None)
         },
     },
@@ -3709,6 +3754,10 @@ const INSTRUCTIONS: [RVInsnSpec; INSTRUCTION_NUM] = [
 
             cpu.mmu.clear_page_cache();
             cpu.reservation = None;
+
+            // HACK
+            cpu.flush_icache = true;
+
             Ok(None)
         },
     },

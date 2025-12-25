@@ -78,8 +78,9 @@ impl Emulator {
 
     /// Runs program set by `load_image()`. The emulator will run forever.
     pub fn run_program(&mut self) {
+        let mut uop_cache = std::collections::HashMap::new();
         loop {
-            self.tick(40);
+            self.tick(40, &mut uop_cache);
             if self.handle_htif() {
                 break;
             }
@@ -98,17 +99,19 @@ impl Emulator {
         //use std::io::{self, Write};
 
         let mut s = String::new();
+        let mut uop_cache = std::collections::HashMap::new();
+
         loop {
             s.clear();
             self.cpu.disassemble(&mut s);
             // XXX might make sense to return the instruction
-            let exceptional = self.tick(1);
+            let exceptional = self.tick(1, &mut uop_cache);
             let cycle = self.cpu.cycle;
             print!("{cycle:5} {:1} {s:72}", u64::from(self.cpu.mmu.prv));
 
             if let Ok(word32) = self.cpu.memop_disass(self.cpu.pc) {
                 #[allow(clippy::cast_sign_loss)]
-                let (insn, _) = cpu::decompress(self.cpu.pc, word32 as u32);
+                let (insn, _) = cpu::decompress(word32 as u32);
                 if let Some(decoded) = cpu::decode(&self.cpu.decode_dag, insn) {
                     let uop = (decoded.decode)(self.cpu.pc, insn, decoded.execute);
                     let wbr = uop.rd;
@@ -190,10 +193,14 @@ impl Emulator {
     }
 
     /// Runs CPU one cycle
-    pub fn tick(&mut self, n: usize) -> bool {
+    pub fn tick(
+        &mut self,
+        n: usize,
+        uop_cache: &mut std::collections::HashMap<i64, cpu::Uop>,
+    ) -> bool {
         // XXX We should be able to set this arbitrarily high, but we seem
         // to hit a race condition and a Linux hang beyond this value
-        self.cpu.run_soc(n)
+        self.cpu.run_soc(n, uop_cache)
     }
 
     /// Sets up program run by the program. This method analyzes the passed
