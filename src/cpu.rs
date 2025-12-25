@@ -70,6 +70,22 @@ pub struct Uop {
     pub execute: ExecFn,
 }
 
+impl PartialEq for Uop {
+    fn eq(&self, other: &Self) -> bool {
+        self.rd == other.rd
+            && self.rs1 == other.rs1
+            && self.rs2 == other.rs2
+            && self.rs3 == other.rs3
+            && self.imm == other.imm
+            && self.rm == other.rm
+            && self.ctf == other.ctf
+            && self.exceptional == other.exceptional
+            && self.serialize == other.serialize
+            && self.insn_size == other.insn_size
+        /* && self.execute == other.execute sadly */
+    }
+}
+
 /// Holds information about registers used by an instruction.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Operands {
@@ -123,10 +139,6 @@ pub struct Cpu {
     // can be written by programs), although we cannot then treat ECALL and
     // EBREAK as committing instructions.œ
     pub seqno: usize,
-
-    // This is used for reporting exceptions (XXX THIS SHOULD NOT BE HERE)
-    pub insn_addr: i64,
-    pub insn: u32, // XXX THIS SHOULD NOT BE HERE
 
     // Holds all memory and devices (XXX: this public mmu suggests we need to rethink the API)
     pub mmu: Mmu,
@@ -279,8 +291,6 @@ impl Cpu {
             cycle: 0,
             wfi: false,
             pc: 0,
-            insn_addr: 0,
-            insn: 0,
             csr: vec![0; 4096].into_boxed_slice(), // XXX MUST GO AWAY SOON
             mmu,
             reservation: None,
@@ -328,11 +338,11 @@ impl Cpu {
 
     /// Checks that float instructions are enabled and
     /// that the rounding mode is legal; do not dirty the FP state
-    fn check_float_access_ro(&self, rm: u8) -> Result<(), Exception> {
+    const fn check_float_access_ro(&self, rm: u8) -> Result<(), Exception> {
         if self.fs == 0 || rm == 5 || rm == 6 {
             Err(Exception {
                 trap: Trap::IllegalInstruction,
-                tval: i64::from(self.insn),
+                tval: 0, // XXX If needed, we can patch this up by re-fetching the bits
             })
         } else {
             Ok(())
@@ -356,8 +366,9 @@ impl Cpu {
         uop_cache: &mut std::collections::HashMap<i64, Uop>,
     ) -> bool {
         for _ in 0..cpu_steps {
+            let insn_addr = self.pc;
             if let Err(exc) = self.step_cpu(uop_cache) {
-                self.handle_exception(&exc);
+                self.handle_exception(&exc, insn_addr);
                 return true;
             }
 
@@ -377,12 +388,6 @@ impl Cpu {
         &mut self,
         uop_cache: &mut std::collections::HashMap<i64, Uop>,
     ) -> Result<(), Exception> {
-        if self.flush_icache {
-            log::debug!("uop cache flush");
-            uop_cache.clear();
-            self.flush_icache = false;
-        }
-
         self.cycle = self.cycle.wrapping_add(1);
         if self.wfi {
             if self.mmu.mip & self.read_csr_raw(Csr::Mie) != 0 {
@@ -391,14 +396,21 @@ impl Cpu {
             return Ok(());
         }
 
+        if self.flush_icache {
+            log::debug!("uop cache flush");
+            uop_cache.clear();
+            self.flush_icache = false;
+        }
+
         self.seqno = self.seqno.wrapping_add(1);
-        self.insn_addr = self.pc;
+        let insn_addr = self.pc;
 
         // XXX refactoring needed
-        if let Some(uop) = uop_cache.get(&self.pc) {
-            log::debug!("uop cache {:x} hit", self.pc);
+        if let Some(uop) = uop_cache.get(&insn_addr) {
+            //log::debug!("uop cache {insn_addr:x} hit");
 
             self.pc += i64::from(uop.insn_size);
+
             let ops = Operands {
                 s1: self.read_x(uop.rs1),
                 s2: self.read_x(uop.rs2),
@@ -412,11 +424,9 @@ impl Cpu {
         } else {
             // XXX For full correctness we mustn't fail if we _can_ fetch 16-bit
             // _and_ it turns out to be a legal instruction.
-            let word = self.memop(Execute, self.insn_addr, 0, 0, 4)?;
+            let word = self.memop(Execute, insn_addr, 0, 0, 4)?;
 
             let (insn, insn_size) = decompress(word as u32);
-            self.insn = word as u32;
-
             self.pc += i64::from(insn_size);
 
             let Some(decoded) = decode(&self.decode_dag, insn) else {
@@ -426,11 +436,28 @@ impl Cpu {
                 });
             };
 
-            let mut uop = (decoded.decode)(self.insn_addr, insn, decoded.execute);
+            let mut uop = (decoded.decode)(insn_addr, insn, decoded.execute);
             uop.insn_size = insn_size;
 
-            log::debug!("uop cache add {:x}", self.insn_addr);
-            uop_cache.insert(self.insn_addr, uop);
+            /*
+            // XXX refactoring needed
+            if let Some(uop_cached) = uop_cache.get(&insn_addr) {
+                log::debug!("uop cache {:x} hit", insn_addr);
+
+                if uop != *uop_cached {
+                    panic!(
+                        "WTF!?  {:08x} {:08x} {uop_cached:#?} != {uop:#?}",
+                        self.pc, word
+                    );
+                }
+            } else {
+                //println!("uop cache add {:x} {:#?}", self.insn_addr, uop);
+                uop_cache.insert(insn_addr, uop);
+                //let uop_cached = uop_cache.get(&self.insn_addr).unwrap();
+                //assert_eq!(uop, *uop_cached);
+            }*/
+
+            uop_cache.insert(insn_addr, uop);
 
             let ops = Operands {
                 s1: self.read_x(uop.rs1),
@@ -443,6 +470,7 @@ impl Cpu {
                 assert_eq!(uop.rd.get(), 64);
             }
         }
+
         Ok(())
     }
 
@@ -480,15 +508,11 @@ impl Cpu {
         }
     }
 
-    fn handle_exception(&mut self, exception: &Exception) {
+    fn handle_exception(&mut self, exception: &Exception, insn_addr: i64) {
         if matches!(exception.trap, Trap::IllegalInstruction) {
-            log::info!(
-                "Illegal instruction {:016x} {:x}",
-                self.insn_addr,
-                self.insn
-            );
+            log::info!("Illegal instruction {insn_addr:016x}");
         }
-        self.handle_trap(exception, self.insn_addr, false);
+        self.handle_trap(exception, insn_addr, false);
     }
 
     #[allow(clippy::similar_names, clippy::too_many_lines)]
@@ -686,13 +710,13 @@ impl Cpu {
         let csr = FromPrimitive::from_u16(csrno)?;
 
         if !csr::legal(csr) {
-            log::warn!("** {:016x}: {csr:?} isn't implemented", self.insn_addr); // XXX Ok, fine, it's useful for debugging but ....
+            log::warn!("** {csr:?} isn't implemented"); // XXX Ok, fine, it's useful for debugging but ....
             return None;
         }
 
         let privilege = (csrno >> 8) & 3;
         if u64::from(privilege) > { u64::from(self.mmu.prv) } {
-            log::warn!("** {:016x}: Lacking priviledge for {csr:?}", self.insn_addr);
+            log::warn!("** Lacking priviledge for {csr:?}");
             return None;
         }
 
@@ -708,8 +732,7 @@ impl Cpu {
 
         let illegal = Err(Exception {
             trap: Trap::IllegalInstruction,
-            tval: i64::from(self.insn), /* XXX we could assign this outside, eliminating the need
-                                         * for self.insn here */
+            tval: 0,
         });
 
         let Some(csr) = self.has_csr_access_privilege(csrno) else {
@@ -734,8 +757,7 @@ impl Cpu {
         let mut value = value as u64;
         let illegal = Err(Exception {
             trap: Trap::IllegalInstruction,
-            tval: i64::from(self.insn), /* XXX we could assign this outside, eliminating the need
-                                         * for self.insn here */
+            tval: 0,
         });
 
         let Some(csr) = self.has_csr_access_privilege(csrno) else {
@@ -754,7 +776,7 @@ impl Cpu {
             }
             Csr::Fflags | Csr::Frm | Csr::Fcsr => self.check_float_access(0)?,
             Csr::Cycle => {
-                log::info!("** deny cycle writing from {:016x}", self.insn_addr);
+                log::info!("** deny cycle writing");
                 return illegal;
             }
             Csr::Satp => {
@@ -898,6 +920,7 @@ impl Cpu {
             let _ = write!(s, "{:016x} <inaccessible>", self.pc);
             return;
         };
+
         self.disassemble_insn(s, self.pc, (word32 & 0xFFFFFFFF) as u32, true);
     }
 
