@@ -100,6 +100,7 @@ impl Emulator {
         let mut s = String::new();
         loop {
             s.clear();
+            self.cpu.disassemble(&mut s);
             // XXX might make sense to return the instruction
             let exceptional = self.tick(1);
             let cycle = self.cpu.cycle;
