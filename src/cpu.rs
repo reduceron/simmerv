@@ -21,6 +21,7 @@ use fp::cvt_i32_sf32;
 use fp::cvt_i64_sf32;
 use fp::cvt_u32_sf32;
 use fp::cvt_u64_sf32;
+use intmap::IntMap;
 use log;
 use num_traits::FromPrimitive;
 use riscv::MemoryAccessType;
@@ -360,11 +361,7 @@ impl Cpu {
     /// Runs program N cycles. Fetch, decode, and execution are completed in a
     /// cycle so far.
     #[allow(clippy::cast_sign_loss)]
-    pub fn run_soc(
-        &mut self,
-        cpu_steps: usize,
-        uop_cache: &mut std::collections::HashMap<i64, Uop>,
-    ) -> bool {
+    pub fn run_soc(&mut self, cpu_steps: usize, uop_cache: &mut IntMap<i64, Uop>) -> bool {
         for _ in 0..cpu_steps {
             let insn_addr = self.pc;
             if let Err(exc) = self.step_cpu(uop_cache) {
@@ -384,10 +381,7 @@ impl Cpu {
 
     // It's here, the One Key Function.  This is where it all happens!
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    fn step_cpu(
-        &mut self,
-        uop_cache: &mut std::collections::HashMap<i64, Uop>,
-    ) -> Result<(), Exception> {
+    fn step_cpu(&mut self, uop_cache: &mut IntMap<i64, Uop>) -> Result<(), Exception> {
         self.cycle = self.cycle.wrapping_add(1);
         if self.wfi {
             if self.mmu.mip & self.read_csr_raw(Csr::Mie) != 0 {
@@ -406,7 +400,7 @@ impl Cpu {
         let insn_addr = self.pc;
 
         // XXX refactoring needed
-        if let Some(uop) = uop_cache.get(&insn_addr) {
+        if let Some(uop) = uop_cache.get(insn_addr) {
             //log::debug!("uop cache {insn_addr:x} hit");
 
             self.pc += i64::from(uop.insn_size);

@@ -18,6 +18,7 @@ use crate::terminal::Terminal;
 use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
+use intmap::IntMap;
 use std::collections::BTreeMap;
 use xmas_elf::sections::SectionData;
 use xmas_elf::symbol_table::Entry;
@@ -78,7 +79,7 @@ impl Emulator {
 
     /// Runs program set by `load_image()`. The emulator will run forever.
     pub fn run_program(&mut self) {
-        let mut uop_cache = std::collections::HashMap::new();
+        let mut uop_cache = IntMap::new();
         loop {
             self.tick(40, &mut uop_cache);
             if self.handle_htif() {
@@ -99,7 +100,7 @@ impl Emulator {
         //use std::io::{self, Write};
 
         let mut s = String::new();
-        let mut uop_cache = std::collections::HashMap::new();
+        let mut uop_cache = IntMap::new();
 
         loop {
             s.clear();
@@ -193,11 +194,7 @@ impl Emulator {
     }
 
     /// Runs CPU one cycle
-    pub fn tick(
-        &mut self,
-        n: usize,
-        uop_cache: &mut std::collections::HashMap<i64, cpu::Uop>,
-    ) -> bool {
+    pub fn tick(&mut self, n: usize, uop_cache: &mut IntMap<i64, cpu::Uop>) -> bool {
         // XXX We should be able to set this arbitrarily high, but we seem
         // to hit a race condition and a Linux hang beyond this value
         self.cpu.run_soc(n, uop_cache)
